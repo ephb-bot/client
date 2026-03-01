@@ -165,10 +165,14 @@ jobs:
           go build -ldflags "-H windowsgui" -o keybaserq.exe
 
       # ── WPF Prompter (updater GUI, requires MSBuild/.NET) ─────────────────
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: Build prompter.exe (WPF updater)
         working-directory: C:\work\src\github.com\keybase\client\go\updater\windows\WpfPrompter
+        # continue-on-error: true  # uncomment to make installer build even if prompter fails
         run: |
-          msbuild WpfPrompter.sln /t:Build /p:Configuration=Release /p:Platform=AnyCPU -nologo
+          msbuild WpfPrompter.sln /t:Build /p:Configuration=Release /p:Platform=AnyCPU /nologo
 
       # ── Electron UI ──────────────────────────────────────────────────────
       - name: Install JS dependencies
