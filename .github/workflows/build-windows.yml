@@ -10,8 +10,6 @@ on:
 
 env:
   GOPATH: C:\work
-  GOARCH: amd64
-  CGO_ENABLED: 0
 
 jobs:
   build-windows:
@@ -24,11 +22,14 @@ jobs:
 
     steps:
       # ── Checkout ──────────────────────────────────────────────────────────
+      # fetch-depth=1, no-tags: avoids case-collision in the thousands of
+      # upstream branches (Windows is case-insensitive).
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           path: src\github.com\keybase\client
-          fetch-depth: 0
+          fetch-depth: 1
+          fetch-tags: false
 
       # ── Go ────────────────────────────────────────────────────────────────
       - name: Set up Go
@@ -46,11 +47,29 @@ jobs:
       - name: Install Yarn
         run: npm install -g yarn
 
-      # ── WIX Toolset ────────────────────────────────────────────────────────
-      - name: Install WIX Toolset 3.11
+      # ── WIX ───────────────────────────────────────────────────────────────
+      # windows-2022 runners already ship WiX 3.14 — just ensure it's on PATH.
+      - name: Add WIX to PATH
+        shell: powershell
         run: |
-          choco install wixtoolset --version=3.11.2 -y --no-progress
-          echo C:\Program Files (x86)\WiX Toolset v3.11\bin >> %GITHUB_PATH%
+          $wix = (Get-Command candle.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $wix) {
+            # Common install locations for WiX 3.x
+            $candidates = @(
+              "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+              "C:\Program Files (x86)\WiX Toolset v3.11\bin",
+              "C:\Program Files\WiX Toolset v3.14\bin"
+            )
+            foreach ($c in $candidates) {
+              if (Test-Path "$c\candle.exe") {
+                echo "$c" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+                Write-Host "WiX found at $c"
+                break
+              }
+            }
+          } else {
+            Write-Host "WiX already on PATH: $wix"
+          }
 
       # ── MinGW (for kbfsdokan CGO build) ───────────────────────────────────
       - name: Set up MinGW
@@ -61,23 +80,26 @@ jobs:
           update: false
           add-to-path: true
 
-      # ── PATH setup ────────────────────────────────────────────────────────
+      # ── GOPATH layout ─────────────────────────────────────────────────────
       - name: Configure GOPATH layout
+        shell: powershell
         run: |
-          mkdir C:\work\src\github.com\keybase 2>NUL || exit 0
-          mklink /J C:\work\src\github.com\keybase\client %GITHUB_WORKSPACE%\src\github.com\keybase\client
-        shell: cmd
+          New-Item -ItemType Directory -Force -Path "C:\work\src\github.com\keybase" | Out-Null
+          # Use junction (no admin required) to wire the checkout into GOPATH
+          $target = "$env:GITHUB_WORKSPACE\src\github.com\keybase\client"
+          $link   = "C:\work\src\github.com\keybase\client"
+          if (-not (Test-Path $link)) {
+            cmd /c mklink /J "$link" "$target"
+          }
 
-      # ── Build winresource (needed for version stamping) ───────────────────
+      # ── Build winresource (version stamping tool) ─────────────────────────
       - name: Build winresource
         working-directory: C:\work\src\github.com\keybase\client\go\keybase
-        run: |
-          set GOPATH=C:\work
-          go generate
         env:
           GOPATH: C:\work
+        run: go generate
 
-      # ── Build Go service executables ──────────────────────────────────────
+      # ── Go service executables ─────────────────────────────────────────────
       - name: Build keybase.exe
         working-directory: C:\work\src\github.com\keybase\client\go\keybase
         env:
@@ -85,9 +107,8 @@ jobs:
           CGO_ENABLED: 0
           KEYBASE_WINBUILD: ${{ github.run_number }}
         run: |
-          for /f %%i in ('winresource.exe -cv') do set KEYBASE_VERSION=%%i
           for /f %%i in ('winresource.exe -cb') do set KEYBASE_BUILD=%%i
-          go build -a -tags "prerelease production" -ldflags="-X github.com\keybase\client\go\libkb.PrereleaseBuild=%KEYBASE_BUILD% -s -w"
+          go build -a -tags "prerelease production" -ldflags="-X github.com/keybase/client/go/libkb.PrereleaseBuild=%KEYBASE_BUILD% -s -w"
 
       - name: Build kbfsdokan.exe
         working-directory: C:\work\src\github.com\keybase\client\go\kbfs\kbfsdokan
@@ -103,21 +124,21 @@ jobs:
           CGO_ENABLED: 0
         run: go build -a
 
-      - name: Build updater (upd.exe)
+      - name: Build upd.exe (updater)
         working-directory: C:\work\src\github.com\keybase\client\go\updater\service
         env:
           GOPATH: C:\work
           CGO_ENABLED: 0
         run: go build -a -o upd.exe
 
-      - name: Build kbnm.exe
+      - name: Build kbnm.exe (browser extension)
         working-directory: C:\work\src\github.com\keybase\client\go\kbnm
         env:
           GOPATH: C:\work
           CGO_ENABLED: 0
         run: go build -a
 
-      - name: Build keybaserq.exe
+      - name: Build keybaserq.exe (quiet launcher)
         working-directory: C:\work\src\github.com\keybase\client\go\tools\runquiet
         env:
           GOPATH: C:\work
@@ -126,10 +147,19 @@ jobs:
           ..\..\keybase\winresource.exe -d "Keybase quiet start utility" -n "keybaserq.exe" -i ..\..\..\media\icons\Keybase.ico
           go build -ldflags "-H windowsgui" -o keybaserq.exe
 
-      # ── Build Electron UI ─────────────────────────────────────────────────
+      # ── WPF Prompter (updater GUI, requires MSBuild/.NET) ─────────────────
+      - name: Build prompter.exe (WPF updater)
+        working-directory: C:\work\src\github.com\keybase\client\go\updater\windows\WpfPrompter
+        run: |
+          msbuild WpfPrompter.sln /t:Build /p:Configuration=Release /p:Platform=AnyCPU -nologo
+
+      # ── Electron UI ──────────────────────────────────────────────────────
       - name: Install JS dependencies
         working-directory: C:\work\src\github.com\keybase\client\shared
-        run: yarn install --pure-lockfile --ignore-optional --ignore-scripts && yarn postinstall && cd node_modules\electron && yarn
+        run: |
+          yarn install --pure-lockfile --ignore-optional --ignore-scripts
+          yarn postinstall
+          cd node_modules\electron && yarn
 
       - name: Package Electron (win32-x64)
         working-directory: C:\work\src\github.com\keybase\client\shared
@@ -139,45 +169,40 @@ jobs:
           for /f %%i in ('C:\work\src\github.com\keybase\client\go\keybase\winresource.exe -cv') do set KEYBASE_VERSION=%%i
           yarn run package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
 
-      # Pad empty folders (WIX heat workaround)
+      # WIX heat fails if a folder contains only subdirs (no files) — pad them
       - name: Pad empty Electron folders for WIX
-        working-directory: C:\work\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64
         shell: powershell
+        working-directory: C:\work\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64
         run: |
           Get-ChildItem -Recurse -Directory | ForEach-Object {
-            $files = Get-ChildItem -Path $_.FullName -File
-            if ($files.Count -eq 0) {
+            if (@(Get-ChildItem -Path $_.FullName -File).Count -eq 0) {
               New-Item -Path (Join-Path $_.FullName "EmptyFile.txt") -ItemType File -Force | Out-Null
             }
           }
 
-      # ── Build WIX Installer (debug/unsigned) ─────────────────────────────
+      # ── WIX Installer (unsigned / debug mode) ────────────────────────────
       - name: Build WIX installer (unsigned)
         working-directory: C:\work\src\github.com\keybase\client\packaging\windows
         env:
           GOPATH: C:\work
           KEYBASE_WINBUILD: ${{ github.run_number }}
-        run: |
-          set SIGNTOOL=echo
-          set CONFIGURATION=Debug
-          call doinstaller_wix.cmd debug
+        run: call doinstaller_wix.cmd debug
 
-      # ── Upload artifacts ──────────────────────────────────────────────────
-      - name: Upload installer
+      # ── Collect + upload ──────────────────────────────────────────────────
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: keybase-windows-installer
-          path: |
-            C:\work\src\github.com\keybase\client\packaging\windows\WIXInstallers\**\*.msi
+          path: C:\work\src\github.com\keybase\client\packaging\windows\**\*.msi
+          if-no-files-found: warn
           retention-days: 30
 
-      # ── Create release on tag ─────────────────────────────────────────────
+      # ── Release on tag ────────────────────────────────────────────────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            C:\work\src\github.com\keybase\client\packaging\windows\WIXInstallers\**\*.msi
+          files: C:\work\src\github.com\keybase\client\packaging\windows\**\*.msi
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
