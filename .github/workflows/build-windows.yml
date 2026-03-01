@@ -174,14 +174,25 @@ jobs:
           msbuild WpfPrompter.sln /t:Build /p:Configuration=Release "/p:Platform=Any CPU" /nologo
 
       # ── Electron UI ──────────────────────────────────────────────────────
-      # Plain yarn install (no --ignore-scripts) so .bin symlinks are created
-      # and babel-node is available for the postinstall + package scripts.
-      # Then run postinstall explicitly, then electron postinstall.
+      # Step 1: install without running postinstall (it needs babel-node which
+      # isn't on PATH yet when yarn's internal script runner calls it via
+      # cross-env-shell → cmd.exe, which doesn't auto-search node_modules/.bin).
       - name: Install JS dependencies
         working-directory: C:\work\src\github.com\keybase\client\shared
+        run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
+
+      # Step 2: run postinstall manually with node_modules/.bin on PATH so
+      # babel-node and all other local bins are findable by cross-env-shell.
+      - name: Run postinstall
+        working-directory: C:\work\src\github.com\keybase\client\shared
         run: |
-          yarn install --pure-lockfile --ignore-optional
-          cd node_modules\electron && yarn postinstall
+          set PATH=%CD%\node_modules\.bin;%PATH%
+          yarn run _helper postinstall
+
+      # Step 3: electron postinstall (downloads the electron binary).
+      - name: Electron postinstall
+        working-directory: C:\work\src\github.com\keybase\client\shared\node_modules\electron
+        run: node install.js
 
       - name: Package Electron (win32-x64)
         working-directory: C:\work\src\github.com\keybase\client\shared
