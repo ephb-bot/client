@@ -174,12 +174,14 @@ jobs:
           msbuild WpfPrompter.sln /t:Build /p:Configuration=Release "/p:Platform=Any CPU" /nologo
 
       # ── Electron UI ──────────────────────────────────────────────────────
-      # Use Keybase's own "modules" script: install + postinstall + electron postinstall.
-      # Do NOT use --ignore-scripts globally — postinstall sets up babel-node which
-      # is required by the "package" script via yarn-helper/index.tsx.
+      # Plain yarn install (no --ignore-scripts) so .bin symlinks are created
+      # and babel-node is available for the postinstall + package scripts.
+      # Then run postinstall explicitly, then electron postinstall.
       - name: Install JS dependencies
         working-directory: C:\work\src\github.com\keybase\client\shared
-        run: yarn run modules
+        run: |
+          yarn install --pure-lockfile --ignore-optional
+          cd node_modules\electron && yarn postinstall
 
       - name: Package Electron (win32-x64)
         working-directory: C:\work\src\github.com\keybase\client\shared
