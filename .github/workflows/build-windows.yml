@@ -22,8 +22,6 @@ jobs:
 
     steps:
       # ── Checkout ──────────────────────────────────────────────────────────
-      # fetch-depth=1, no-tags: avoids case-collision in the thousands of
-      # upstream branches (Windows is case-insensitive).
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
@@ -48,8 +46,6 @@ jobs:
         run: npm install -g yarn
 
       # ── WIX ───────────────────────────────────────────────────────────────
-      # windows-2022 runners ship WiX 3.14 but it may not be on PATH.
-      # Use PS 5.1-compatible syntax (no ?. operator).
       - name: Add WIX to PATH
         shell: powershell
         run: |
@@ -73,7 +69,6 @@ jobs:
               }
             }
             if (-not $found) {
-              # Last resort: search entire ProgramFiles
               $exe = Get-ChildItem "C:\Program Files (x86)" -Recurse -Filter "candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
               if (-not $exe) {
                 $exe = Get-ChildItem "C:\Program Files" -Recurse -Filter "candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -102,14 +97,13 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path "C:\work\src\github.com\keybase" | Out-Null
-          # Use junction (no admin required) to wire the checkout into GOPATH
           $target = "$env:GITHUB_WORKSPACE\src\github.com\keybase\client"
           $link   = "C:\work\src\github.com\keybase\client"
           if (-not (Test-Path $link)) {
             cmd /c mklink /J "$link" "$target"
           }
 
-      # ── Build winresource (version stamping tool) ─────────────────────────
+      # ── Build winresource ─────────────────────────────────────────────────
       - name: Build winresource
         working-directory: C:\work\src\github.com\keybase\client\go\keybase
         env:
@@ -164,7 +158,7 @@ jobs:
           ..\..\keybase\winresource.exe -d "Keybase quiet start utility" -n "keybaserq.exe" -i ..\..\..\media\icons\Keybase.ico
           go build -ldflags "-H windowsgui" -o keybaserq.exe
 
-      # ── WPF Prompter (updater GUI, requires MSBuild/.NET) ─────────────────
+      # ── WPF Prompter ─────────────────────────────────────────────────────
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
@@ -174,20 +168,21 @@ jobs:
           msbuild WpfPrompter.sln /t:Build /p:Configuration=Release "/p:Platform=Any CPU" /nologo
 
       # ── Electron UI ──────────────────────────────────────────────────────
-      # Step 1: install without running postinstall (it needs babel-node which
-      # isn't on PATH yet when yarn's internal script runner calls it via
-      # cross-env-shell → cmd.exe, which doesn't auto-search node_modules/.bin).
+      # Install deps without running scripts (postinstall needs babel-node
+      # which is itself a dep — chicken-and-egg on first install).
       - name: Install JS dependencies
         working-directory: C:\work\src\github.com\keybase\client\shared
         run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
 
-      # Step 2: run postinstall via npx babel-node so local node_modules/.bin
-      # is always resolved correctly (npx doesn't rely on PATH or cross-env-shell).
+      # Run postinstall by calling babel-node directly from node_modules/.bin,
+      # bypassing Node 20's ESM loader (which chokes on .tsx before Babel can run).
+      # cross-env-shell (used by yarn's _node alias) has the same issue via npx,
+      # so we invoke the binary directly instead.
       - name: Run postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared
-        run: npx --no-install babel-node --extensions ".tsx,.js" desktop/yarn-helper postinstall
+        run: node_modules\.bin\babel-node --extensions ".tsx,.js" desktop/yarn-helper postinstall
 
-      # Step 3: electron postinstall (downloads the electron binary).
+      # Download Electron binary
       - name: Electron postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared\node_modules\electron
         run: node install.js
@@ -198,9 +193,9 @@ jobs:
           GOPATH: C:\work
         run: |
           for /f %%i in ('C:\work\src\github.com\keybase\client\go\keybase\winresource.exe -cv') do set KEYBASE_VERSION=%%i
-          npx --no-install babel-node --extensions ".tsx,.js" desktop/yarn-helper package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
+          node_modules\.bin\babel-node --extensions ".tsx,.js" desktop/yarn-helper package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
 
-      # WIX heat fails if a folder contains only subdirs (no files) — pad them
+      # WIX heat fails on folders with no files — pad them
       - name: Pad empty Electron folders for WIX
         shell: powershell
         working-directory: C:\work\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64
