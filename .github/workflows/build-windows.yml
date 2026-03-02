@@ -181,13 +181,11 @@ jobs:
         working-directory: C:\work\src\github.com\keybase\client\shared
         run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
 
-      # Step 2: run postinstall manually with node_modules/.bin on PATH so
-      # babel-node and all other local bins are findable by cross-env-shell.
+      # Step 2: run postinstall via npx babel-node so local node_modules/.bin
+      # is always resolved correctly (npx doesn't rely on PATH or cross-env-shell).
       - name: Run postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared
-        run: |
-          set PATH=%CD%\node_modules\.bin;%PATH%
-          yarn run _helper postinstall
+        run: npx --no-install babel-node --extensions ".tsx,.js" desktop/yarn-helper postinstall
 
       # Step 3: electron postinstall (downloads the electron binary).
       - name: Electron postinstall
@@ -200,7 +198,7 @@ jobs:
           GOPATH: C:\work
         run: |
           for /f %%i in ('C:\work\src\github.com\keybase\client\go\keybase\winresource.exe -cv') do set KEYBASE_VERSION=%%i
-          yarn run package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
+          npx --no-install babel-node --extensions ".tsx,.js" desktop/yarn-helper package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
 
       # WIX heat fails if a folder contains only subdirs (no files) — pad them
       - name: Pad empty Electron folders for WIX
