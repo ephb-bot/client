@@ -195,102 +195,133 @@ jobs:
 
       # Write a low-level Babel transform shim that works with Node 20.
       #
-      # Root cause of all previous failures: Node 20.20 added importSyncForRequire —
-      # when require() encounters a file with import/export syntax, it routes through
-      # the ESM compiler BEFORE any _compile hooks (like pirates/@babel/register) fire.
-      # The ESM compiler then chokes on TypeScript syntax.
+      # Root cause: Node 20.20 added importSyncForRequire — when require() encounters
+      # a file with import/export syntax (even .js files!), it routes through the ESM
+      # compiler BEFORE any _compile hooks fire. This breaks:
+      #   1. .tsx/.ts files (TypeScript syntax unknown to ESM compiler)
+      #   2. Mixed ESM/CJS files like webpack.config.babel.js (has both import and require())
       #
-      # Fix: install Module._extensions hooks that call babel.transformSync() and
-      # write the output back via m._compile() as pure CommonJS — no import/export
-      # in the output, so Node 20's ESM interop path never triggers.
+      # Fix: hook Module._extensions for .tsx, .ts, AND .js. For .js files, only apply
+      # babel when the file contains ESM syntax (import/export at start of line) to avoid
+      # transpiling the entire node_modules tree unnecessarily.
       - name: Write babel shim
         shell: powershell
         working-directory: C:\work\src\github.com\keybase\client\shared
         run: |
-          Set-Content -Path yarn-runner.js -Encoding UTF8 -Value @'
-          // Babel shim for Node 20: hooks Module._extensions to transpile .tsx/.ts
-          // to pure CommonJS BEFORE Node's importSyncForRequire ESM detector fires.
-          //
-          // Also patches child_process.execSync so that "yarn _node" invocations
-          // (used by the "package" command in build.tsx) are rewritten to use
-          // yarn-shim.js instead of babel-node -- babel-node breaks on Node 20.20
-          // because importSyncForRequire routes .tsx files through the ESM compiler
-          // before babel-node's hooks can intercept them.
-          const babel  = require("@babel/core");
-          const Module = require("module");
-          const cp     = require("child_process");
-          const fs     = require("fs");
-          const path   = require("path");
+          $shimCode = @'
+const babel  = require("@babel/core");
+const Module = require("module");
+const cp     = require("child_process");
+const fs     = require("fs");
+const path   = require("path");
 
-          const OPTS = {
-            presets: [
-              ["@babel/preset-env", { targets: { node: "current" }, modules: "commonjs" }],
-              ["@babel/preset-typescript"],
-            ],
-            sourceType: "module",
-            caller: { name: "@babel/node" },
-          };
+const OPTS = {
+  presets: [
+    ["@babel/preset-env", { targets: { node: "current" }, modules: "commonjs" }],
+    ["@babel/preset-typescript"],
+  ],
+  sourceType: "module",
+  caller: { name: "@babel/node" },
+};
 
-          function hook(ext) {
-            Module._extensions[ext] = function(m, filename) {
-              const src    = fs.readFileSync(filename, "utf8");
-              const result = babel.transformSync(src, { ...OPTS, filename });
-              m._compile(result.code, filename);
-            };
-          }
-          hook(".tsx");
-          hook(".ts");
+// Returns true if the source likely contains ESM import/export syntax.
+// We check for lines starting with "import " or "export " (or "export default").
+// This avoids running babel on every single .js file in node_modules.
+function hasESM(src) {
+  return /^(import |export )/m.test(src);
+}
 
-          // Write yarn-shim.js: bare babel hooks + require(argv[2])
-          // Used as the Node entry point when babel-node would normally be called.
-          const shimPath = path.resolve(__dirname, "yarn-shim.js");
-          const shimCode = [
-            "const babel  = require(\"@babel/core\");",
-            "const Module = require(\"module\");",
-            "const fs     = require(\"fs\");",
-            "const path   = require(\"path\");",
-            "const OPTS = {",
-            "  presets: [",
-            "    [\"@babel/preset-env\", { targets: { node: \"current\" }, modules: \"commonjs\" }],",
-            "    [\"@babel/preset-typescript\"],",
-            "  ],",
-            "  sourceType: \"module\",",
-            "  caller: { name: \"@babel/node\" },",
-            "};",
-            "function hook(ext) {",
-            "  Module._extensions[ext] = function(m, filename) {",
-            "    const src    = fs.readFileSync(filename, \"utf8\");",
-            "    const result = babel.transformSync(src, { ...OPTS, filename });",
-            "    m._compile(result.code, filename);",
-            "  };",
-            "}",
-            "hook(\".tsx\");",
-            "hook(\".ts\");",
-            "require(path.resolve(process.cwd(), process.argv[2]));",
-          ].join("\n");
-          fs.writeFileSync(shimPath, shimCode);
+function babelHook(ext) {
+  Module._extensions[ext] = function(m, filename) {
+    const src    = fs.readFileSync(filename, "utf8");
+    const result = babel.transformSync(src, { ...OPTS, filename });
+    m._compile(result.code, filename);
+  };
+}
 
-          // Monkey-patch execSync: replace "yarn _node" with "node yarn-shim.js"
-          // so that child processes spawned by index.tsx also use our babel hook
-          // instead of the broken babel-node ESM path on Node 20.20.
-          const _execSync = cp.execSync;
-          cp.execSync = function(cmd, opts) {
-            if (typeof cmd === "string" && /\byarn _node\b/.test(cmd)) {
-              cmd = cmd.replace(
-                /\byarn _node\b\s*(--max_old_space_size=\S+)?\s*/,
-                function(_, memArg) {
-                  let out = "node ";
-                  if (memArg) out += memArg.replace("--max_old_space_size=", "--max-old-space-size=") + " ";
-                  return out + "yarn-shim.js ";
-                }
-              );
-              process.stderr.write("[yarn-runner] rewritten cmd: " + cmd + "\n");
-            }
-            return _execSync.call(this, cmd, opts);
-          };
+function smartJsHook() {
+  const origJs = Module._extensions[".js"] || Module._extensions["default"];
+  Module._extensions[".js"] = function(m, filename) {
+    // Skip node_modules (they're CJS) and only intercept project .js files
+    // that have ESM syntax — specifically to handle webpack.config.babel.js
+    // and similar mixed-module files that Node 20.20 would route through ESM.
+    const src = fs.readFileSync(filename, "utf8");
+    if (hasESM(src) && !filename.includes("node_modules")) {
+      const result = babel.transformSync(src, { ...OPTS, filename });
+      m._compile(result.code, filename);
+    } else {
+      origJs(m, filename);
+    }
+  };
+}
 
-          require("./desktop/yarn-helper/index.tsx");
-          '@
+babelHook(".tsx");
+babelHook(".ts");
+smartJsHook();
+
+// Write yarn-shim.js: same babel hooks + require(argv[2])
+// Used as the Node entry point when babel-node would normally be called.
+const shimPath = path.resolve(__dirname, "yarn-shim.js");
+const shimLines = [
+  "const babel  = require(\"@babel/core\");",
+  "const Module = require(\"module\");",
+  "const fs     = require(\"fs\");",
+  "const path   = require(\"path\");",
+  "const OPTS = {",
+  "  presets: [",
+  "    [\"@babel/preset-env\", { targets: { node: \"current\" }, modules: \"commonjs\" }],",
+  "    [\"@babel/preset-typescript\"],",
+  "  ],",
+  "  sourceType: \"module\",",
+  "  caller: { name: \"@babel/node\" },",
+  "};",
+  "function hasESM(src) { return /^(import |export )/m.test(src); }",
+  "function babelHook(ext) {",
+  "  Module._extensions[ext] = function(m, filename) {",
+  "    const src    = fs.readFileSync(filename, \"utf8\");",
+  "    const result = babel.transformSync(src, { ...OPTS, filename });",
+  "    m._compile(result.code, filename);",
+  "  };",
+  "}",
+  "function smartJsHook() {",
+  "  const origJs = Module._extensions[\".js\"] || Module._extensions[\"default\"];",
+  "  Module._extensions[\".js\"] = function(m, filename) {",
+  "    const src = fs.readFileSync(filename, \"utf8\");",
+  "    if (hasESM(src) && !filename.includes(\"node_modules\")) {",
+  "      const result = babel.transformSync(src, { ...OPTS, filename });",
+  "      m._compile(result.code, filename);",
+  "    } else {",
+  "      origJs(m, filename);",
+  "    }",
+  "  };",
+  "}",
+  "babelHook(\".tsx\");",
+  "babelHook(\".ts\");",
+  "smartJsHook();",
+  "require(path.resolve(process.cwd(), process.argv[2]));",
+];
+fs.writeFileSync(shimPath, shimLines.join("\n"));
+
+// Monkey-patch execSync: replace "yarn _node" with "node yarn-shim.js"
+const _execSync = cp.execSync;
+cp.execSync = function(cmd, opts) {
+  if (typeof cmd === "string" && /\byarn _node\b/.test(cmd)) {
+    cmd = cmd.replace(
+      /\byarn _node\b\s*(--max_old_space_size=\S+)?\s*/,
+      function(_, memArg) {
+        let out = "node ";
+        if (memArg) out += memArg.replace("--max_old_space_size=", "--max-old-space-size=") + " ";
+        return out + "yarn-shim.js ";
+      }
+    );
+    process.stderr.write("[yarn-runner] rewritten cmd: " + cmd + "\n");
+  }
+  return _execSync.call(this, cmd, opts);
+};
+
+require("./desktop/yarn-helper/index.tsx");
+'@
+          Set-Content -Path yarn-runner.js -Encoding UTF8 -Value $shimCode
 
       - name: Run postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared
