@@ -364,6 +364,10 @@ jobs:
         env:
           GOPATH: C:\work
           KEYBASE_WINBUILD: ${{ github.run_number }}
+          # DevCert must be defined (any value) to avoid a CMD syntax error in the
+          # dosignexe subroutine: "IF %DevCert% NEQ 1" fails when DevCert is empty.
+          # In debug mode SIGNTOOL=echo so no actual signing happens regardless.
+          DevCert: 1
         run: call doinstaller_wix.cmd debug
 
       # ── Collect + upload ──────────────────────────────────────────────────
@@ -384,3 +388,4 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
