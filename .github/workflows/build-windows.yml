@@ -210,9 +210,17 @@ jobs:
           Set-Content -Path yarn-runner.js -Encoding UTF8 -Value @'
           // Babel shim for Node 20: hooks Module._extensions to transpile .tsx/.ts
           // to pure CommonJS BEFORE Node's importSyncForRequire ESM detector fires.
+          //
+          // Also patches child_process.execSync so that "yarn _node" invocations
+          // (used by the "package" command in build.tsx) are rewritten to use
+          // yarn-shim.js instead of babel-node -- babel-node breaks on Node 20.20
+          // because importSyncForRequire routes .tsx files through the ESM compiler
+          // before babel-node's hooks can intercept them.
           const babel  = require("@babel/core");
           const Module = require("module");
+          const cp     = require("child_process");
           const fs     = require("fs");
+          const path   = require("path");
 
           const OPTS = {
             presets: [
@@ -232,6 +240,54 @@ jobs:
           }
           hook(".tsx");
           hook(".ts");
+
+          // Write yarn-shim.js: bare babel hooks + require(argv[2])
+          // Used as the Node entry point when babel-node would normally be called.
+          const shimPath = path.resolve(__dirname, "yarn-shim.js");
+          const shimCode = [
+            "const babel  = require(\"@babel/core\");",
+            "const Module = require(\"module\");",
+            "const fs     = require(\"fs\");",
+            "const path   = require(\"path\");",
+            "const OPTS = {",
+            "  presets: [",
+            "    [\"@babel/preset-env\", { targets: { node: \"current\" }, modules: \"commonjs\" }],",
+            "    [\"@babel/preset-typescript\"],",
+            "  ],",
+            "  sourceType: \"module\",",
+            "  caller: { name: \"@babel/node\" },",
+            "};",
+            "function hook(ext) {",
+            "  Module._extensions[ext] = function(m, filename) {",
+            "    const src    = fs.readFileSync(filename, \"utf8\");",
+            "    const result = babel.transformSync(src, { ...OPTS, filename });",
+            "    m._compile(result.code, filename);",
+            "  };",
+            "}",
+            "hook(\".tsx\");",
+            "hook(\".ts\");",
+            "require(path.resolve(process.cwd(), process.argv[2]));",
+          ].join("\n");
+          fs.writeFileSync(shimPath, shimCode);
+
+          // Monkey-patch execSync: replace "yarn _node" with "node yarn-shim.js"
+          // so that child processes spawned by index.tsx also use our babel hook
+          // instead of the broken babel-node ESM path on Node 20.20.
+          const _execSync = cp.execSync;
+          cp.execSync = function(cmd, opts) {
+            if (typeof cmd === "string" && /\byarn _node\b/.test(cmd)) {
+              cmd = cmd.replace(
+                /\byarn _node\b\s*(--max_old_space_size=\S+)?\s*/,
+                function(_, memArg) {
+                  let out = "node ";
+                  if (memArg) out += memArg.replace("--max_old_space_size=", "--max-old-space-size=") + " ";
+                  return out + "yarn-shim.js ";
+                }
+              );
+              process.stderr.write("[yarn-runner] rewritten cmd: " + cmd + "\n");
+            }
+            return _execSync.call(this, cmd, opts);
+          };
 
           require("./desktop/yarn-helper/index.tsx");
           '@
