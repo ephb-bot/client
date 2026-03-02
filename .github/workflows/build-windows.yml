@@ -2,10 +2,10 @@ name: Windows Build
 
 on:
   push:
-    branches: [master]
+    branches: [ci/windows-build]
     tags: ['v*']
   pull_request:
-    branches: [master]
+    branches: [ci/windows-build]
   workflow_dispatch:
 
 env:
