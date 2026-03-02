@@ -238,7 +238,9 @@ jobs:
 
       - name: Run postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared
-        run: node yarn-runner.js postinstall
+        run: |
+          set "PATH=%CD%\node_modules\.bin;%PATH%"
+          node yarn-runner.js postinstall
 
       - name: Electron postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared\node_modules\electron
@@ -249,6 +251,7 @@ jobs:
         env:
           GOPATH: C:\work
         run: |
+          set "PATH=%CD%\node_modules\.bin;%PATH%"
           for /f %%i in ('C:\work\src\github.com\keybase\client\go\keybase\winresource.exe -cv') do set KEYBASE_VERSION=%%i
           node yarn-runner.js package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
 
