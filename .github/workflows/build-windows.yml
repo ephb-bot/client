@@ -358,6 +358,28 @@ jobs:
             }
           }
 
+      # Pre-download the Dokan redistributable so the WIX pre-build event's
+      # "if NOT exist" check finds it already in place.
+      # The original S3 URL (prerelease.keybase.io) returns 403; the canonical
+      # upstream source on GitHub Releases is still available and the SHA1 matches.
+      - name: Pre-fetch Dokan redistributable for WIX
+        shell: powershell
+        run: |
+          $dest = "C:\work\src\github.com\keybase\client\packaging\windows\WIXInstallers\KeybaseApps\Redist\dokan-dev\1.4.0.1000\DokanSetup_redist.exe"
+          if (-not (Test-Path $dest)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+            $url = "https://github.com/dokan-dev/dokany/releases/download/v1.4.0.1000/DokanSetup_redist.exe"
+            Write-Host "Downloading Dokan redist from $url ..."
+            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+          }
+          $hash = (Get-FileHash -Algorithm SHA1 $dest).Hash
+          Write-Host "SHA1: $hash"
+          if ($hash -ne "98998615DE96E077A581228A93F4A46D21232574") {
+            Write-Error "SHA1 mismatch for DokanSetup_redist.exe: $hash"
+            exit 1
+          }
+          Write-Host "Dokan redist OK."
+
       # ── WIX Installer (unsigned / debug mode) ────────────────────────────
       - name: Build WIX installer (unsigned)
         working-directory: C:\work\src\github.com\keybase\client\packaging\windows
@@ -388,4 +410,5 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
