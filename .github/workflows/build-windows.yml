@@ -35,7 +35,6 @@ jobs:
         with:
           go-version: '1.24'
           cache-dependency-path: src\github.com\keybase\client\go\go.sum
-          # setup-go automatically caches the Go module download cache
 
       # ── Node / Yarn ────────────────────────────────────────────────────────
       - name: Set up Node
@@ -47,7 +46,6 @@ jobs:
         run: npm install -g yarn
 
       # ── Cache node_modules ─────────────────────────────────────────────────
-      # Keyed on yarn.lock — cache hit skips the 150s yarn install entirely.
       - name: Cache node_modules
         id: cache-node-modules
         uses: actions/cache@v4
@@ -57,7 +55,6 @@ jobs:
           restore-keys: node-modules-
 
       # ── Cache Electron binary ──────────────────────────────────────────────
-      # Electron binary is ~80MB. Keyed on package.json (contains electron version).
       - name: Cache Electron binary
         uses: actions/cache@v4
         with:
@@ -133,8 +130,7 @@ jobs:
         run: go generate
 
       # ── Go service executables ─────────────────────────────────────────────
-      # Removed -a: Go's build cache handles incremental compilation.
-      # setup-go already restores/saves the module download cache.
+      # No -a flag: Go's build cache handles incremental compilation.
       - name: Build keybase.exe
         working-directory: C:\work\src\github.com\keybase\client\go\keybase
         env:
@@ -192,43 +188,62 @@ jobs:
           msbuild WpfPrompter.sln /t:Build /p:Configuration=Release "/p:Platform=Any CPU" /nologo
 
       # ── Electron UI ──────────────────────────────────────────────────────
-      # Install deps — skipped when node_modules cache hits.
       - name: Install JS dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         working-directory: C:\work\src\github.com\keybase\client\shared
         run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
 
-      # Write a tiny bootstrap shim so process.argv works correctly:
-      #   process.argv = [node, 'yarn-runner.js', 'postinstall']  → argv[2]='postinstall' ✓
+      # Write a low-level Babel transform shim that works with Node 20.
       #
-      # We use node --require @babel/register instead of babel-node because:
-      # babel-node spawns a child process and @babel/register hooks into the child's
-      # require() — but Node 20's ESM specifier resolution fires BEFORE register can
-      # intercept .tsx, causing ERR_UNKNOWN_FILE_EXTENSION. --require hooks register
-      # into the current process before any module loads, so .tsx is handled by Babel.
-      - name: Write babel-node shim
+      # Root cause of all previous failures: Node 20.20 added importSyncForRequire —
+      # when require() encounters a file with import/export syntax, it routes through
+      # the ESM compiler BEFORE any _compile hooks (like pirates/@babel/register) fire.
+      # The ESM compiler then chokes on TypeScript syntax.
+      #
+      # Fix: install Module._extensions hooks that call babel.transformSync() and
+      # write the output back via m._compile() as pure CommonJS — no import/export
+      # in the output, so Node 20's ESM interop path never triggers.
+      - name: Write babel shim
         shell: powershell
         working-directory: C:\work\src\github.com\keybase\client\shared
         run: |
-          Set-Content -Path yarn-runner.js -Value @"
-          require('@babel/register')({
-            extensions: ['.tsx', '.ts', '.js'],
-            rootMode: 'upward',
-            caller: { name: '@babel/node' },
-          });
-          require('./desktop/yarn-helper/index.tsx');
-          "@
+          Set-Content -Path yarn-runner.js -Encoding UTF8 -Value @'
+          // Babel shim for Node 20: hooks Module._extensions to transpile .tsx/.ts
+          // to pure CommonJS BEFORE Node's importSyncForRequire ESM detector fires.
+          const babel  = require("@babel/core");
+          const Module = require("module");
+          const fs     = require("fs");
+
+          const OPTS = {
+            presets: [
+              ["@babel/preset-env", { targets: { node: "current" }, modules: "commonjs" }],
+              ["@babel/preset-typescript"],
+            ],
+            sourceType: "module",
+            caller: { name: "@babel/node" },
+          };
+
+          function hook(ext) {
+            Module._extensions[ext] = function(m, filename) {
+              const src    = fs.readFileSync(filename, "utf8");
+              const result = babel.transformSync(src, { ...OPTS, filename });
+              m._compile(result.code, filename);
+            };
+          }
+          hook(".tsx");
+          hook(".ts");
+
+          require("./desktop/yarn-helper/index.tsx");
+          '@
 
       - name: Run postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared
         run: node yarn-runner.js postinstall
 
-      # Download Electron binary (fast on cache hit)
       - name: Electron postinstall
         working-directory: C:\work\src\github.com\keybase\client\shared\node_modules\electron
         run: node install.js
 
-      # Get version from winresource for the package step
       - name: Package Electron (win32-x64)
         working-directory: C:\work\src\github.com\keybase\client\shared
         env:
