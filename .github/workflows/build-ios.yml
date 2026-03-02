@@ -1,0 +1,174 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [ci/ios-build]
+  pull_request:
+    branches: [ci/ios-build]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS
+    runs-on: macos-latest  # macOS 15 ARM64, Xcode 16
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+
+      # ── Go ────────────────────────────────────────────────────────────────
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: go/go.sum
+
+      # ── Node / Yarn ────────────────────────────────────────────────────────
+      # Node must be set up before CocoaPods — Podfile uses `node --print` to
+      # resolve react-native and expo paths.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Yarn
+        run: npm install -g yarn
+
+      # ── Ruby / Fastlane ───────────────────────────────────────────────────
+      # Fastlane is used for signed IPA builds (TestFlight/App Store).
+      # The Gemfile lives in shared/ios/. bundler-cache speeds up subsequent runs.
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: shared/ios
+
+      # ── Cache node_modules ─────────────────────────────────────────────────
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: shared/node_modules
+          key: node-modules-ios-${{ hashFiles('shared/yarn.lock') }}
+          restore-keys: node-modules-ios-
+
+      # ── Cache CocoaPods ────────────────────────────────────────────────────
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: shared/ios/Pods
+          key: pods-${{ hashFiles('shared/ios/Podfile.lock') }}
+          restore-keys: pods-
+
+      # ── GOPATH layout ─────────────────────────────────────────────────────
+      - name: Configure GOPATH layout
+        run: |
+          mkdir -p ~/work/src/github.com/keybase
+          ln -sf "$GITHUB_WORKSPACE" ~/work/src/github.com/keybase/client
+          echo "GOPATH=$HOME/work" >> $GITHUB_ENV
+
+      # ── Build Go mobile framework (keybasego.xcframework) ─────────────────
+      # gomobile bind compiles the Go bind package into an XCFramework for iOS.
+      # Output: shared/ios/keybasego.xcframework (consumed by Xcode).
+      # GOPATH is available here from $GITHUB_ENV set in the previous step.
+      - name: Build gomobile (iOS XCFramework)
+        env:
+          KEYBASE_BUILD: ${{ github.run_number }}
+          DEST_DIR: ${{ github.workspace }}/shared/ios
+        run: |
+          export PATH="$GOPATH/bin:$PATH"
+          bash shared/react-native/gobuild.sh ios
+
+      # ── JS dependencies ───────────────────────────────────────────────────
+      - name: Install JS dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        working-directory: shared
+        run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
+
+      # Node 20 babel shim — same approach as Windows build.
+      # Hooks Module._extensions for .tsx/.ts to pre-transpile to CommonJS
+      # before Node 20's importSyncForRequire ESM detector fires.
+      # node_modules/.bin on PATH so tools like patch-package resolve correctly.
+      - name: Write babel shim
+        working-directory: shared
+        run: |
+          cat > yarn-runner.js << 'SHIMEOF'
+          const babel  = require("@babel/core");
+          const Module = require("module");
+          const fs     = require("fs");
+          const OPTS = {
+            presets: [
+              ["@babel/preset-env", { targets: { node: "current" }, modules: "commonjs" }],
+              ["@babel/preset-typescript"],
+            ],
+            sourceType: "module",
+            caller: { name: "@babel/node" },
+          };
+          function hook(ext) {
+            Module._extensions[ext] = function(m, filename) {
+              const src    = fs.readFileSync(filename, "utf8");
+              const result = babel.transformSync(src, { ...OPTS, filename });
+              m._compile(result.code, filename);
+            };
+          }
+          hook(".tsx");
+          hook(".ts");
+          require("./desktop/yarn-helper/index.tsx");
+          SHIMEOF
+
+      - name: Run postinstall
+        working-directory: shared
+        run: |
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          node yarn-runner.js postinstall
+
+      # ── CocoaPods ─────────────────────────────────────────────────────────
+      # --repo-update ensures the spec repo is fresh on a cold runner.
+      # Node must already be on PATH (it is — setup-node ran earlier).
+      - name: Install CocoaPods
+        working-directory: shared/ios
+        run: pod install --repo-update
+
+      # ── Xcode build (simulator, unsigned) ─────────────────────────────────
+      # iPhone 16 is the correct simulator for Xcode 16 on macos-15.
+      # OS version omitted — Xcode picks the latest installed runtime automatically.
+      # CODE_SIGNING_ALLOWED=NO skips all signing for simulator builds.
+      - name: Build (simulator, unsigned)
+        working-directory: shared/ios
+        run: |
+          xcodebuild \
+            -workspace Keybase.xcworkspace \
+            -scheme Keybase \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath ~/DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+
+      # ── Upload artifact ────────────────────────────────────────────────────
+      - name: Upload .app artifact (simulator)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keybase-iOS-Simulator
+          path: ~/DerivedData/Build/Products/Debug-iphonesimulator/Keybase.app
+          if-no-files-found: warn
+          retention-days: 14
+
+      # ── Signed IPA (disabled until signing is configured) ─────────────────
+      # To enable: add these secrets in repo settings:
+      #   APP_STORE_CONNECT_KEY_ID, APP_STORE_CONNECT_ISSUER_ID,
+      #   APP_STORE_CONNECT_KEY (base64-encoded .p8), MATCH_PASSWORD
+      # Then remove the `if: ${{ false }}` condition.
+      - name: Build signed IPA (TestFlight)
+        if: ${{ false }}
+        working-directory: shared/ios
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+        run: bundle exec fastlane beta
