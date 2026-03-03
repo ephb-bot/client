@@ -103,6 +103,18 @@ type UseDataSourceProps = {
   lastTextRef: React.RefObject<string>
 }
 
+// Local client-only slash commands — injected into the suggester alongside
+// server-provided builtins. These are never sent to the service.
+const localCommands: ReadonlyArray<T.RPCChat.ConversationCommand> = [
+  {
+    description: 'Toggle automatic playback of incoming audio messages in this conversation',
+    hasHelpText: false,
+    name: 'autoplay',
+    usage: '',
+    username: '',
+  },
+]
+
 const useDataSource = (p: UseDataSourceProps) => {
   const {filter, inputRef, lastTextRef} = p
   const staticConfig = Chat.useChatState(s => s.staticConfig)
@@ -119,12 +131,14 @@ const useDataSource = (p: UseDataSourceProps) => {
         botCommands.typ === T.RPCChat.ConversationCommandGroupsTyp.custom
           ? botCommands.custom.commands || blankCommands
           : blankCommands
-      const suggestCommands =
+      const builtinCommands =
         commands.typ === T.RPCChat.ConversationCommandGroupsTyp.builtin
           ? staticConfig
             ? staticConfig.builtinCommands[commands.builtin]
             : blankCommands
           : blankCommands
+      // Merge local commands with server builtins (local ones first)
+      const suggestCommands = [...localCommands, ...builtinCommands]
 
       const sel = inputRef.current?.getSelection()
       if (sel) {
