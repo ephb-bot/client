@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: src\github.com\keybase\client\shared\node_modules
-          key: node-modules-${{ hashFiles('src/github.com/keybase/client/shared/yarn.lock') }}
+          key: node-modules-keybase-client-${{ hashFiles('src/github.com/keybase/client/shared/yarn.lock') }}
           restore-keys: node-modules-
 
       # ── Cache Electron binary ──────────────────────────────────────────────
@@ -61,7 +61,7 @@ jobs:
           path: |
             src\github.com\keybase\client\shared\node_modules\electron\dist
             ~\AppData\Local\electron\Cache
-          key: electron-${{ hashFiles('src/github.com/keybase/client/shared/package.json') }}
+          key: electron-keybase-client-${{ hashFiles('src/github.com/keybase/client/shared/package.json') }}
           restore-keys: electron-
 
       # ── WIX ───────────────────────────────────────────────────────────────
