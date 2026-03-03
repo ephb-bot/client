@@ -141,6 +141,7 @@ type ConvoStore = T.Immutable<{
   unread: number
   unsentText?: string
   pendingAudioRecording: boolean
+  autoplayAudio: boolean
 }>
 
 const initialConvoStore: ConvoStore = {
@@ -180,6 +181,7 @@ const initialConvoStore: ConvoStore = {
   unread: 0,
   unsentText: undefined,
   pendingAudioRecording: false,
+  autoplayAudio: false,
 }
 
 type LoadMoreMessagesParams = {
@@ -281,6 +283,7 @@ export interface ConvoState extends ConvoStore {
     replyJump: (messageID: T.Chat.MessageID) => void
     requestStartAudioRecording: () => void
     clearPendingAudioRecording: () => void
+    toggleAutoplayAudio: () => void
     resetChatWithoutThem: () => void
     resetLetThemIn: (username: string) => void
     resetState: 'default'
@@ -2479,6 +2482,17 @@ const createSlice: Z.ImmerStateCreator<ConvoState> = (set, get) => {
         s.pendingAudioRecording = false
       })
     },
+    toggleAutoplayAudio: () => {
+      const next = !get().autoplayAudio
+      set(s => {
+        s.autoplayAudio = next
+      })
+      get().dispatch.setCommandStatusInfo({
+        actions: [],
+        displayText: `Audio autoplay ${next ? 'enabled' : 'disabled'} for this conversation.`,
+        displayType: T.RPCChat.UICommandStatusDisplayTyp.status,
+      })
+    },
     resetChatWithoutThem: () => {
       // Implicit teams w/ reset users we can invite them back in or chat w/o them
       const meta = get().meta
@@ -2588,6 +2602,11 @@ const createSlice: Z.ImmerStateCreator<ConvoState> = (set, get) => {
       }
     },
     sendMessage: text => {
+      // Handle local-only slash commands before sending
+      if (text.trim() === '/autoplay') {
+        get().dispatch.toggleAutoplayAudio()
+        return
+      }
       const editOrdinal = get().editing
       if (editOrdinal) {
         _messageEdit(editOrdinal, text)

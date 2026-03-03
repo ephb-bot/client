@@ -59,6 +59,7 @@ const AudioVis = (props: VisProps) => {
 }
 
 type Props = {
+  autoPlay?: boolean
   big: boolean
   duration: number
   maxWidth?: number
@@ -67,9 +68,20 @@ type Props = {
 }
 
 const AudioPlayer = (props: Props) => {
-  const {duration, big, maxWidth, url, visAmps} = props
+  const {autoPlay, duration, big, maxWidth, url, visAmps} = props
   const [playedRatio, setPlayedRatio] = React.useState(0)
-  const [paused, setPaused] = React.useState(true)
+  // Start unpaused when autoPlay is requested and we have a url ready
+  const [paused, setPaused] = React.useState(() => !(autoPlay && url.length > 0))
+
+  // If url wasn't ready at mount time but arrives later (download completes),
+  // kick off playback then.
+  const prevUrlRef = React.useRef(url)
+  React.useEffect(() => {
+    if (autoPlay && url.length > 0 && prevUrlRef.current !== url && paused) {
+      setPaused(false)
+    }
+    prevUrlRef.current = url
+  }, [autoPlay, url, paused])
   const onClick = () => {
     if (paused) {
       setPaused(false)
