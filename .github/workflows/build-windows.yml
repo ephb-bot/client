@@ -1,28 +1,40 @@
-name: Windows Desktop Build
+name: Windows Build
 
 on:
   push:
-    branches: [feat/action-button-record-deeplink]
+    branches: [ci/windows-build, feat/action-button-record-deeplink]
+    tags: ['v*']
+  pull_request:
+    branches: [ci/windows-build, feat/action-button-record-deeplink]
   workflow_dispatch:
+
+env:
+  GOPATH: C:\work
 
 jobs:
   build-windows:
-    name: Build Windows (x64)
-    runs-on: windows-latest
+    name: Build Windows
+    runs-on: windows-2022
+
+    defaults:
+      run:
+        shell: cmd
 
     steps:
       # ── Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
+          path: src\github.com\keybase\client
           fetch-depth: 1
+          fetch-tags: false
 
       # ── Go ────────────────────────────────────────────────────────────────
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache-dependency-path: go/go.sum
+          cache-dependency-path: src\github.com\keybase\client\go\go.sum
 
       # ── Node / Yarn ────────────────────────────────────────────────────────
       - name: Set up Node
@@ -38,47 +50,172 @@ jobs:
         id: cache-node-modules
         uses: actions/cache@v4
         with:
-          path: shared/node_modules
-          key: node-modules-win-${{ hashFiles('shared/yarn.lock') }}
-          restore-keys: node-modules-win-
+          path: src\github.com\keybase\client\shared\node_modules
+          key: node-modules-${{ hashFiles('src/github.com/keybase/client/shared/yarn.lock') }}
+          restore-keys: node-modules-
+
+      # ── Cache Electron binary ──────────────────────────────────────────────
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            src\github.com\keybase\client\shared\node_modules\electron\dist
+            ~\AppData\Local\electron\Cache
+          key: electron-${{ hashFiles('src/github.com/keybase/client/shared/package.json') }}
+          restore-keys: electron-
+
+      # ── WIX ───────────────────────────────────────────────────────────────
+      - name: Add WIX to PATH
+        shell: powershell
+        run: |
+          $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
+          if ($candle) {
+            Write-Host "WiX already on PATH: $($candle.Source)"
+          } else {
+            $candidates = @(
+              "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+              "C:\Program Files (x86)\WiX Toolset v3.11\bin",
+              "C:\Program Files\WiX Toolset v3.14\bin",
+              "C:\Program Files\WiX Toolset v3.11\bin"
+            )
+            $found = $false
+            foreach ($c in $candidates) {
+              if (Test-Path "$c\candle.exe") {
+                Add-Content -Path $env:GITHUB_PATH -Value $c
+                Write-Host "WiX found and added to PATH: $c"
+                $found = $true
+                break
+              }
+            }
+            if (-not $found) {
+              $exe = Get-ChildItem "C:\Program Files (x86)" -Recurse -Filter "candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if (-not $exe) {
+                $exe = Get-ChildItem "C:\Program Files" -Recurse -Filter "candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+              }
+              if ($exe) {
+                Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+                Write-Host "WiX found via search: $($exe.FullName)"
+              } else {
+                Write-Error "WiX candle.exe not found anywhere!"
+                exit 1
+              }
+            }
+          }
+
+      # ── MinGW (for kbfsdokan CGO build) ───────────────────────────────────
+      - name: Set up MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          update: false
+          add-to-path: true
 
       # ── GOPATH layout ─────────────────────────────────────────────────────
       - name: Configure GOPATH layout
-        shell: bash
+        shell: powershell
         run: |
-          mkdir -p ~/work/src/github.com/keybase
-          # Use mklink /J (junction) on Windows via cmd; bash fallback with ln -sf
-          cmd //c mklink //J "$(cygpath -w ~/work/src/github.com/keybase/client)" "$(cygpath -w $GITHUB_WORKSPACE)" 2>/dev/null || \
-            ln -sf "$GITHUB_WORKSPACE" ~/work/src/github.com/keybase/client
-          echo "GOPATH=$HOME/work" >> $GITHUB_ENV
+          New-Item -ItemType Directory -Force -Path "C:\work\src\github.com\keybase" | Out-Null
+          $target = "$env:GITHUB_WORKSPACE\src\github.com\keybase\client"
+          $link   = "C:\work\src\github.com\keybase\client"
+          if (-not (Test-Path $link)) {
+            cmd /c mklink /J "$link" "$target"
+          }
 
-      # ── Build Go keybase.exe (Windows) ─────────────────────────────────────
-      # Builds the keybase daemon for Windows. CGO disabled for security.
-      - name: Build keybase.exe
-        shell: bash
+      # ── Build winresource ─────────────────────────────────────────────────
+      - name: Build winresource
+        working-directory: C:\work\src\github.com\keybase\client\go\keybase
         env:
-          CGO_ENABLED: '0'
-        run: |
-          export GOPATH="$HOME/work"
-          export PATH="$GOPATH/bin:$PATH"
-          cd go/keybase
-          go build -ldflags="-s -w" -o keybase.exe .
+          GOPATH: C:\work
+        run: go generate
 
-      # ── JS dependencies ───────────────────────────────────────────────────
+      # ── Go service executables ─────────────────────────────────────────────
+      # No -a flag: Go's build cache handles incremental compilation.
+      - name: Build keybase.exe
+        working-directory: C:\work\src\github.com\keybase\client\go\keybase
+        env:
+          GOPATH: C:\work
+          CGO_ENABLED: 0
+          KEYBASE_WINBUILD: ${{ github.run_number }}
+        run: |
+          for /f %%i in ('winresource.exe -cb') do set KEYBASE_BUILD=%%i
+          go build -tags "prerelease production" -ldflags="-X github.com/keybase/client/go/libkb.PrereleaseBuild=%KEYBASE_BUILD% -s -w"
+
+      - name: Build kbfsdokan.exe
+        working-directory: C:\work\src\github.com\keybase\client\go\kbfs\kbfsdokan
+        env:
+          GOPATH: C:\work
+          CGO_ENABLED: 1
+        run: go build -tags "prerelease production" -ldflags="-s -w"
+
+      - name: Build git-remote-keybase.exe
+        working-directory: C:\work\src\github.com\keybase\client\go\kbfs\kbfsgit\git-remote-keybase
+        env:
+          GOPATH: C:\work
+          CGO_ENABLED: 0
+        run: go build
+
+      - name: Build upd.exe (updater)
+        working-directory: C:\work\src\github.com\keybase\client\go\updater\service
+        env:
+          GOPATH: C:\work
+          CGO_ENABLED: 0
+        run: go build -o upd.exe
+
+      - name: Build kbnm.exe (browser extension)
+        working-directory: C:\work\src\github.com\keybase\client\go\kbnm
+        env:
+          GOPATH: C:\work
+          CGO_ENABLED: 0
+        run: go build
+
+      - name: Build keybaserq.exe (quiet launcher)
+        working-directory: C:\work\src\github.com\keybase\client\go\tools\runquiet
+        env:
+          GOPATH: C:\work
+          CGO_ENABLED: 0
+        run: |
+          ..\..\keybase\winresource.exe -d "Keybase quiet start utility" -n "keybaserq.exe" -i ..\..\..\media\icons\Keybase.ico
+          go build -ldflags "-H windowsgui" -o keybaserq.exe
+
+      # ── WPF Prompter ─────────────────────────────────────────────────────
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build prompter.exe (WPF updater)
+        working-directory: C:\work\src\github.com\keybase\client\go\updater\windows\WpfPrompter
+        run: |
+          msbuild WpfPrompter.sln /t:Build /p:Configuration=Release "/p:Platform=Any CPU" /nologo
+
+      # ── Electron UI ──────────────────────────────────────────────────────
       - name: Install JS dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
-        working-directory: shared
+        working-directory: C:\work\src\github.com\keybase\client\shared
         run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
 
-      # ── Write babel shim (same as iOS workflow) ────────────────────────────
+      # Write a low-level Babel transform shim that works with Node 20.
+      #
+      # Root cause: Node 20.20 added importSyncForRequire — when require() encounters
+      # a file with import/export syntax (even .js files!), it routes through the ESM
+      # compiler BEFORE any _compile hooks fire. This breaks:
+      #   1. .tsx/.ts files (TypeScript syntax unknown to ESM compiler)
+      #   2. Mixed ESM/CJS files like webpack.config.babel.js (has both import and require())
+      #
+      # Fix: hook Module._extensions for .tsx, .ts, AND .js. For .js files we only
+      # apply babel when the source contains top-level import/export AND the file is
+      # outside node_modules — this avoids transpiling the entire CJS ecosystem while
+      # still covering project files like webpack.config.babel.js.
       - name: Write babel shim
-        working-directory: shared
-        shell: bash
+        shell: powershell
+        working-directory: C:\work\src\github.com\keybase\client\shared
         run: |
-          cat > yarn-runner.js << 'SHIMEOF'
+          Set-Content -Path yarn-runner.js -Encoding UTF8 -Value @'
           const babel  = require("@babel/core");
           const Module = require("module");
+          const cp     = require("child_process");
           const fs     = require("fs");
+          const path   = require("path");
+
           const OPTS = {
             presets: [
               ["@babel/preset-env", { targets: { node: "current" }, modules: "commonjs" }],
@@ -87,6 +224,13 @@ jobs:
             sourceType: "module",
             caller: { name: "@babel/node" },
           };
+
+          // Returns true when source has top-level ESM import/export syntax.
+          // Used to avoid running babel on every .js file in node_modules.
+          function hasESM(src) {
+            return /^(import |export )/m.test(src);
+          }
+
           function hook(ext) {
             Module._extensions[ext] = function(m, filename) {
               const src    = fs.readFileSync(filename, "utf8");
@@ -94,67 +238,177 @@ jobs:
               m._compile(result.code, filename);
             };
           }
-          hook(".tsx");
-          hook(".ts");
-          require("./desktop/yarn-helper/index.tsx");
-          SHIMEOF
 
-      - name: Run postinstall
-        working-directory: shared
-        shell: bash
-        run: |
-          export PATH="$PWD/node_modules/.bin:$PATH"
-          node yarn-runner.js postinstall
-
-      # ── Build production JS bundle ─────────────────────────────────────────
-      - name: Build production JS (webpack)
-        working-directory: shared
-        shell: bash
-        run: |
-          export PATH="$PWD/node_modules/.bin:$PATH"
-          node yarn-runner.js build-prod
-
-      # ── Package Electron app (win32/x64, unsigned) ─────────────────────────
-      - name: Package Electron app
-        working-directory: shared
-        shell: bash
-        run: |
-          export PATH="$PWD/node_modules/.bin:$PATH"
-          node yarn-runner.js package -- \
-            --arch=x64 \
-            --platform=win32 \
-            --appVersion=0.0.0-dev
-
-      # ── Copy keybase.exe into Electron package ─────────────────────────────
-      # The packaged Electron app expects the keybase daemon in its resources dir.
-      - name: Copy keybase.exe into package
-        shell: bash
-        run: |
-          PACKAGE_DIR=$(find shared/desktop/release -maxdepth 1 -name "Keybase-win32-x64" -type d | head -1)
-          if [ -n "$PACKAGE_DIR" ]; then
-            cp go/keybase/keybase.exe "$PACKAGE_DIR/resources/"
-            echo "Copied keybase.exe to $PACKAGE_DIR/resources/"
-          else
-            echo "Package dir not found — skipping keybase.exe copy"
-          fi
-
-      # ── Zip and upload artifact ────────────────────────────────────────────
-      - name: Zip package
-        shell: pwsh
-        run: |
-          $pkg = Get-ChildItem shared/desktop/release -Filter "Keybase-win32-x64" -Directory | Select-Object -First 1
-          if ($pkg) {
-            Compress-Archive -Path $pkg.FullName -DestinationPath Keybase-win32-x64.zip
-            Write-Host "Zipped: $($pkg.FullName)"
-          } else {
-            Write-Error "Package directory not found"
-            exit 1
+          // For .js files: only transpile project files with ESM syntax.
+          // This handles webpack.config.babel.js (has import AND require()) without
+          // paying the cost of babel-compiling all of node_modules.
+          function hookJs() {
+            const origJs = Module._extensions[".js"];
+            Module._extensions[".js"] = function(m, filename) {
+              if (!filename.includes("node_modules")) {
+                const src = fs.readFileSync(filename, "utf8");
+                if (hasESM(src)) {
+                  const result = babel.transformSync(src, { ...OPTS, filename });
+                  m._compile(result.code, filename);
+                  return;
+                }
+              }
+              origJs(m, filename);
+            };
           }
 
-      - name: Upload Windows artifact
+          hook(".tsx");
+          hook(".ts");
+          hookJs();
+
+          // Write yarn-shim.js: same babel hooks + require(argv[2])
+          // Used as the Node entry point when babel-node would normally be called.
+          const shimPath = path.resolve(__dirname, "yarn-shim.js");
+          const shimCode = [
+            "const babel  = require(\"@babel/core\");",
+            "const Module = require(\"module\");",
+            "const fs     = require(\"fs\");",
+            "const path   = require(\"path\");",
+            "const OPTS = {",
+            "  presets: [",
+            "    [\"@babel/preset-env\", { targets: { node: \"current\" }, modules: \"commonjs\" }],",
+            "    [\"@babel/preset-typescript\"],",
+            "  ],",
+            "  sourceType: \"module\",",
+            "  caller: { name: \"@babel/node\" },",
+            "};",
+            "function hasESM(src) { return /^(import |export )/m.test(src); }",
+            "function hook(ext) {",
+            "  Module._extensions[ext] = function(m, filename) {",
+            "    const src    = fs.readFileSync(filename, \"utf8\");",
+            "    const result = babel.transformSync(src, { ...OPTS, filename });",
+            "    m._compile(result.code, filename);",
+            "  };",
+            "}",
+            "function hookJs() {",
+            "  const origJs = Module._extensions[\".js\"];",
+            "  Module._extensions[\".js\"] = function(m, filename) {",
+            "    if (!filename.includes(\"node_modules\")) {",
+            "      const src = fs.readFileSync(filename, \"utf8\");",
+            "      if (hasESM(src)) {",
+            "        const result = babel.transformSync(src, { ...OPTS, filename });",
+            "        m._compile(result.code, filename);",
+            "        return;",
+            "      }",
+            "    }",
+            "    origJs(m, filename);",
+            "  };",
+            "}",
+            "hook(\".tsx\");",
+            "hook(\".ts\");",
+            "hookJs();",
+            "require(path.resolve(process.cwd(), process.argv[2]));",
+          ].join("\n");
+          fs.writeFileSync(shimPath, shimCode);
+
+          // Monkey-patch execSync: replace "yarn _node" with "node yarn-shim.js"
+          // so that child processes spawned by index.tsx also use our babel hook
+          // instead of the broken babel-node ESM path on Node 20.20.
+          const _execSync = cp.execSync;
+          cp.execSync = function(cmd, opts) {
+            if (typeof cmd === "string" && /\byarn _node\b/.test(cmd)) {
+              cmd = cmd.replace(
+                /\byarn _node\b\s*(--max_old_space_size=\S+)?\s*/,
+                function(_, memArg) {
+                  let out = "node ";
+                  if (memArg) out += memArg.replace("--max_old_space_size=", "--max-old-space-size=") + " ";
+                  return out + "yarn-shim.js ";
+                }
+              );
+              process.stderr.write("[yarn-runner] rewritten cmd: " + cmd + "\n");
+            }
+            return _execSync.call(this, cmd, opts);
+          };
+
+          require("./desktop/yarn-helper/index.tsx");
+          '@
+
+      - name: Run postinstall
+        working-directory: C:\work\src\github.com\keybase\client\shared
+        run: |
+          set "PATH=%CD%\node_modules\.bin;%PATH%"
+          node yarn-runner.js postinstall
+
+      - name: Electron postinstall
+        working-directory: C:\work\src\github.com\keybase\client\shared\node_modules\electron
+        run: node install.js
+
+      - name: Package Electron (win32-x64)
+        working-directory: C:\work\src\github.com\keybase\client\shared
+        env:
+          GOPATH: C:\work
+        run: |
+          set "PATH=%CD%\node_modules\.bin;%PATH%"
+          for /f %%i in ('C:\work\src\github.com\keybase\client\go\keybase\winresource.exe -cv') do set KEYBASE_VERSION=%%i
+          node yarn-runner.js package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
+
+      # WIX heat fails on folders with no files — pad them
+      - name: Pad empty Electron folders for WIX
+        shell: powershell
+        working-directory: C:\work\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64
+        run: |
+          Get-ChildItem -Recurse -Directory | ForEach-Object {
+            if (@(Get-ChildItem -Path $_.FullName -File).Count -eq 0) {
+              New-Item -Path (Join-Path $_.FullName "EmptyFile.txt") -ItemType File -Force | Out-Null
+            }
+          }
+
+      # Pre-download the Dokan redistributable so the WIX pre-build event's
+      # "if NOT exist" check finds it already in place.
+      # The original S3 URL (prerelease.keybase.io) returns 403; the canonical
+      # upstream source on GitHub Releases is still available and the SHA1 matches.
+      - name: Pre-fetch Dokan redistributable for WIX
+        shell: powershell
+        run: |
+          $dest = "C:\work\src\github.com\keybase\client\packaging\windows\WIXInstallers\KeybaseApps\Redist\dokan-dev\1.4.0.1000\DokanSetup_redist.exe"
+          if (-not (Test-Path $dest)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+            $url = "https://github.com/dokan-dev/dokany/releases/download/v1.4.0.1000/DokanSetup_redist.exe"
+            Write-Host "Downloading Dokan redist from $url ..."
+            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+          }
+          $hash = (Get-FileHash -Algorithm SHA1 $dest).Hash
+          Write-Host "SHA1: $hash"
+          if ($hash -ne "98998615DE96E077A581228A93F4A46D21232574") {
+            Write-Error "SHA1 mismatch for DokanSetup_redist.exe: $hash"
+            exit 1
+          }
+          Write-Host "Dokan redist OK."
+
+      # ── WIX Installer (unsigned / debug mode) ────────────────────────────
+      - name: Build WIX installer (unsigned)
+        working-directory: C:\work\src\github.com\keybase\client\packaging\windows
+        env:
+          GOPATH: C:\work
+          KEYBASE_WINBUILD: ${{ github.run_number }}
+          # DevCert must be defined (any value) to avoid a CMD syntax error in the
+          # dosignexe subroutine: "IF %DevCert% NEQ 1" fails when DevCert is empty.
+          # In debug mode SIGNTOOL=echo so no actual signing happens regardless.
+          DevCert: 1
+        run: call doinstaller_wix.cmd debug
+
+      # ── Collect + upload ──────────────────────────────────────────────────
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Keybase-win32-x64
-          path: Keybase-win32-x64.zip
-          if-no-files-found: error
-          retention-days: 14
+          name: keybase-windows-installer
+          path: C:\work\src\github.com\keybase\client\packaging\windows\**\*.msi
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ── Release on tag ────────────────────────────────────────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: C:\work\src\github.com\keybase\client\packaging\windows\**\*.msi
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
