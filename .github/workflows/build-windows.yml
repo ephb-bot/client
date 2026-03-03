@@ -183,13 +183,33 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       # WpfPrompter targets .NET Framework 4.0 — the targeting pack is not
-      # pre-installed on windows-2022 runners. Install it via Chocolatey.
+      # pre-installed on windows-2022 runners.
+      # Install reference assemblies directly from the VS2022 NuGet feed.
       - name: Install .NET 4.0 targeting pack
         shell: powershell
         run: |
-          choco install netfx-4.0-devpack -y --no-progress
-          # The targeting pack installs reference assemblies to the standard path;
-          # MSBuild picks them up automatically on the next invocation.
+          $dest = "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0"
+          if (Test-Path "$dest\mscorlib.dll") {
+            Write-Host ".NET 4.0 reference assemblies already present."
+          } else {
+            # Download Microsoft.NETFramework.ReferenceAssemblies.net40 from NuGet
+            $nupkg = "$env:TEMP\net40-refasm.nupkg"
+            $url   = "https://www.nuget.org/api/v2/package/Microsoft.NETFramework.ReferenceAssemblies.net40/1.0.3"
+            Write-Host "Downloading .NET 4.0 reference assemblies from NuGet..."
+            Invoke-WebRequest -Uri $url -OutFile $nupkg -UseBasicParsing
+            # Extract the nupkg (it's a zip)
+            $extract = "$env:TEMP\net40-refasm"
+            Expand-Archive -Path $nupkg -DestinationPath $extract -Force
+            # The assemblies live under build\.NETFramework\v4.0\ in the package
+            $src = Join-Path $extract "build\.NETFramework\v4.0"
+            if (-not (Test-Path $src)) {
+              # fallback path in some package versions
+              $src = Join-Path $extract "build\net40"
+            }
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            Copy-Item -Path "$src\*" -Destination $dest -Recurse -Force
+            Write-Host "Installed .NET 4.0 reference assemblies to $dest"
+          }
 
       - name: Build prompter.exe (WPF updater)
         working-directory: C:\work\src\github.com\keybase\client\go\updater\windows\WpfPrompter
