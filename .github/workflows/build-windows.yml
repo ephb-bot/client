@@ -1,0 +1,160 @@
+name: Windows Desktop Build
+
+on:
+  push:
+    branches: [feat/action-button-record-deeplink]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: windows-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── Go ────────────────────────────────────────────────────────────────
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: go/go.sum
+
+      # ── Node / Yarn ────────────────────────────────────────────────────────
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Yarn
+        run: npm install -g yarn
+
+      # ── Cache node_modules ─────────────────────────────────────────────────
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: shared/node_modules
+          key: node-modules-win-${{ hashFiles('shared/yarn.lock') }}
+          restore-keys: node-modules-win-
+
+      # ── GOPATH layout ─────────────────────────────────────────────────────
+      - name: Configure GOPATH layout
+        shell: bash
+        run: |
+          mkdir -p ~/work/src/github.com/keybase
+          # Use mklink /J (junction) on Windows via cmd; bash fallback with ln -sf
+          cmd //c mklink //J "$(cygpath -w ~/work/src/github.com/keybase/client)" "$(cygpath -w $GITHUB_WORKSPACE)" 2>/dev/null || \
+            ln -sf "$GITHUB_WORKSPACE" ~/work/src/github.com/keybase/client
+          echo "GOPATH=$HOME/work" >> $GITHUB_ENV
+
+      # ── Build Go keybase.exe (Windows) ─────────────────────────────────────
+      # Builds the keybase daemon for Windows. CGO disabled for security.
+      - name: Build keybase.exe
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          export GOPATH="$HOME/work"
+          export PATH="$GOPATH/bin:$PATH"
+          cd go/keybase
+          go build -ldflags="-s -w" -o keybase.exe .
+
+      # ── JS dependencies ───────────────────────────────────────────────────
+      - name: Install JS dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        working-directory: shared
+        run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
+
+      # ── Write babel shim (same as iOS workflow) ────────────────────────────
+      - name: Write babel shim
+        working-directory: shared
+        shell: bash
+        run: |
+          cat > yarn-runner.js << 'SHIMEOF'
+          const babel  = require("@babel/core");
+          const Module = require("module");
+          const fs     = require("fs");
+          const OPTS = {
+            presets: [
+              ["@babel/preset-env", { targets: { node: "current" }, modules: "commonjs" }],
+              ["@babel/preset-typescript"],
+            ],
+            sourceType: "module",
+            caller: { name: "@babel/node" },
+          };
+          function hook(ext) {
+            Module._extensions[ext] = function(m, filename) {
+              const src    = fs.readFileSync(filename, "utf8");
+              const result = babel.transformSync(src, { ...OPTS, filename });
+              m._compile(result.code, filename);
+            };
+          }
+          hook(".tsx");
+          hook(".ts");
+          require("./desktop/yarn-helper/index.tsx");
+          SHIMEOF
+
+      - name: Run postinstall
+        working-directory: shared
+        shell: bash
+        run: |
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          node yarn-runner.js postinstall
+
+      # ── Build production JS bundle ─────────────────────────────────────────
+      - name: Build production JS (webpack)
+        working-directory: shared
+        shell: bash
+        run: |
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          node yarn-runner.js build-prod
+
+      # ── Package Electron app (win32/x64, unsigned) ─────────────────────────
+      - name: Package Electron app
+        working-directory: shared
+        shell: bash
+        run: |
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          node yarn-runner.js package -- \
+            --arch=x64 \
+            --platform=win32 \
+            --appVersion=0.0.0-dev
+
+      # ── Copy keybase.exe into Electron package ─────────────────────────────
+      # The packaged Electron app expects the keybase daemon in its resources dir.
+      - name: Copy keybase.exe into package
+        shell: bash
+        run: |
+          PACKAGE_DIR=$(find shared/desktop/release -maxdepth 1 -name "Keybase-win32-x64" -type d | head -1)
+          if [ -n "$PACKAGE_DIR" ]; then
+            cp go/keybase/keybase.exe "$PACKAGE_DIR/resources/"
+            echo "Copied keybase.exe to $PACKAGE_DIR/resources/"
+          else
+            echo "Package dir not found — skipping keybase.exe copy"
+          fi
+
+      # ── Zip and upload artifact ────────────────────────────────────────────
+      - name: Zip package
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem shared/desktop/release -Filter "Keybase-win32-x64" -Directory | Select-Object -First 1
+          if ($pkg) {
+            Compress-Archive -Path $pkg.FullName -DestinationPath Keybase-win32-x64.zip
+            Write-Host "Zipped: $($pkg.FullName)"
+          } else {
+            Write-Error "Package directory not found"
+            exit 1
+          }
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keybase-win32-x64
+          path: Keybase-win32-x64.zip
+          if-no-files-found: error
+          retention-days: 14
