@@ -130,7 +130,6 @@ jobs:
         run: go generate
 
       # ── Go service executables ─────────────────────────────────────────────
-      # No -a flag: Go's build cache handles incremental compilation.
       - name: Build keybase.exe
         working-directory: C:\work\src\github.com\keybase\client\go\keybase
         env:
@@ -182,35 +181,6 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # WpfPrompter targets .NET Framework 4.0 — the targeting pack is not
-      # pre-installed on windows-2022 runners.
-      # Install reference assemblies directly from the VS2022 NuGet feed.
-      - name: Install .NET 4.0 targeting pack
-        shell: powershell
-        run: |
-          $dest = "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.0"
-          if (Test-Path "$dest\mscorlib.dll") {
-            Write-Host ".NET 4.0 reference assemblies already present."
-          } else {
-            # Download Microsoft.NETFramework.ReferenceAssemblies.net40 from NuGet
-            $nupkg = "$env:TEMP\net40-refasm.nupkg"
-            $url   = "https://www.nuget.org/api/v2/package/Microsoft.NETFramework.ReferenceAssemblies.net40/1.0.3"
-            Write-Host "Downloading .NET 4.0 reference assemblies from NuGet..."
-            Invoke-WebRequest -Uri $url -OutFile $nupkg -UseBasicParsing
-            # Extract the nupkg (it's a zip)
-            $extract = "$env:TEMP\net40-refasm"
-            Expand-Archive -Path $nupkg -DestinationPath $extract -Force
-            # The assemblies live under build\.NETFramework\v4.0\ in the package
-            $src = Join-Path $extract "build\.NETFramework\v4.0"
-            if (-not (Test-Path $src)) {
-              # fallback path in some package versions
-              $src = Join-Path $extract "build\net40"
-            }
-            New-Item -ItemType Directory -Force -Path $dest | Out-Null
-            Copy-Item -Path "$src\*" -Destination $dest -Recurse -Force
-            Write-Host "Installed .NET 4.0 reference assemblies to $dest"
-          }
-
       - name: Build prompter.exe (WPF updater)
         working-directory: C:\work\src\github.com\keybase\client\go\updater\windows\WpfPrompter
         run: |
@@ -222,18 +192,6 @@ jobs:
         working-directory: C:\work\src\github.com\keybase\client\shared
         run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
 
-      # Write a low-level Babel transform shim that works with Node 20.
-      #
-      # Root cause: Node 20.20 added importSyncForRequire — when require() encounters
-      # a file with import/export syntax (even .js files!), it routes through the ESM
-      # compiler BEFORE any _compile hooks fire. This breaks:
-      #   1. .tsx/.ts files (TypeScript syntax unknown to ESM compiler)
-      #   2. Mixed ESM/CJS files like webpack.config.babel.js (has both import and require())
-      #
-      # Fix: hook Module._extensions for .tsx, .ts, AND .js. For .js files we only
-      # apply babel when the source contains top-level import/export AND the file is
-      # outside node_modules — this avoids transpiling the entire CJS ecosystem while
-      # still covering project files like webpack.config.babel.js.
       - name: Write babel shim
         shell: powershell
         working-directory: C:\work\src\github.com\keybase\client\shared
@@ -254,8 +212,6 @@ jobs:
             caller: { name: "@babel/node" },
           };
 
-          // Returns true when source has top-level ESM import/export syntax.
-          // Used to avoid running babel on every .js file in node_modules.
           function hasESM(src) {
             return /^(import |export )/m.test(src);
           }
@@ -268,9 +224,6 @@ jobs:
             };
           }
 
-          // For .js files: only transpile project files with ESM syntax.
-          // This handles webpack.config.babel.js (has import AND require()) without
-          // paying the cost of babel-compiling all of node_modules.
           function hookJs() {
             const origJs = Module._extensions[".js"];
             Module._extensions[".js"] = function(m, filename) {
@@ -290,8 +243,6 @@ jobs:
           hook(".ts");
           hookJs();
 
-          // Write yarn-shim.js: same babel hooks + require(argv[2])
-          // Used as the Node entry point when babel-node would normally be called.
           const shimPath = path.resolve(__dirname, "yarn-shim.js");
           const shimCode = [
             "const babel  = require(\"@babel/core\");",
@@ -335,9 +286,6 @@ jobs:
           ].join("\n");
           fs.writeFileSync(shimPath, shimCode);
 
-          // Monkey-patch execSync: replace "yarn _node" with "node yarn-shim.js"
-          // so that child processes spawned by index.tsx also use our babel hook
-          // instead of the broken babel-node ESM path on Node 20.20.
           const _execSync = cp.execSync;
           cp.execSync = function(cmd, opts) {
             if (typeof cmd === "string" && /\byarn _node\b/.test(cmd)) {
@@ -376,7 +324,6 @@ jobs:
           for /f %%i in ('C:\work\src\github.com\keybase\client\go\keybase\winresource.exe -cv') do set KEYBASE_VERSION=%%i
           node yarn-runner.js package --arch=x64 --platform=win32 --appVersion=%KEYBASE_VERSION% --icon=C:\work\src\github.com\keybase\client\media\icons\Keybase.ico
 
-      # WIX heat fails on folders with no files — pad them
       - name: Pad empty Electron folders for WIX
         shell: powershell
         working-directory: C:\work\src\github.com\keybase\client\shared\desktop\release\win32-x64\Keybase-win32-x64
@@ -387,10 +334,6 @@ jobs:
             }
           }
 
-      # Pre-download the Dokan redistributable so the WIX pre-build event's
-      # "if NOT exist" check finds it already in place.
-      # The original S3 URL (prerelease.keybase.io) returns 403; the canonical
-      # upstream source on GitHub Releases is still available and the SHA1 matches.
       - name: Pre-fetch Dokan redistributable for WIX
         shell: powershell
         run: |
@@ -409,19 +352,14 @@ jobs:
           }
           Write-Host "Dokan redist OK."
 
-      # ── WIX Installer (unsigned / debug mode) ────────────────────────────
       - name: Build WIX installer (unsigned)
         working-directory: C:\work\src\github.com\keybase\client\packaging\windows
         env:
           GOPATH: C:\work
           KEYBASE_WINBUILD: ${{ github.run_number }}
-          # DevCert must be defined (any value) to avoid a CMD syntax error in the
-          # dosignexe subroutine: "IF %DevCert% NEQ 1" fails when DevCert is empty.
-          # In debug mode SIGNTOOL=echo so no actual signing happens regardless.
           DevCert: 1
         run: call doinstaller_wix.cmd debug
 
-      # ── Collect + upload ──────────────────────────────────────────────────
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
@@ -430,7 +368,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # ── Release on tag ────────────────────────────────────────────────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -439,5 +376,3 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
