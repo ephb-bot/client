@@ -37,6 +37,21 @@ const AudioVideo = (props: Props) => {
     }
   }, [paused])
 
+  // When url arrives (e.g. service provides it after mount) and we're already
+  // unpaused (autoplay), kick off playback — the paused effect won't re-fire
+  // because paused didn't change, only the src did.
+  const lastUrlRef = React.useRef(url)
+  React.useEffect(() => {
+    if (lastUrlRef.current === url) return
+    lastUrlRef.current = url
+    if (!paused && url.length > 0) {
+      vidRef.current
+        ?.play()
+        .then(() => {})
+        .catch(() => {})
+    }
+  }, [url, paused])
+
   return (
     <video
       ref={vidRef}
