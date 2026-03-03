@@ -9,6 +9,7 @@ import logger from '@/logger'
 import * as T from '@/constants/types'
 import {navigateAppend, switchTab} from '../router2/util'
 import {storeRegistry} from '../store-registry'
+import * as ChatCommon from '../chat2/common'
 
 const prefix = 'keybase://'
 type Store = T.Immutable<{
@@ -203,17 +204,27 @@ export const useDeepLinksState = Z.createZustand<State>((set, get) => {
             return
           }
           break
-        case 'chat':
-          if (parts.length === 2 || parts.length === 3) {
-            if (parts[1]!.includes('#')) {
-              const teamChat = parts[1]!.split('#')
+        case 'chat': {
+          // Parse optional query params (e.g. ?record=1) before splitting on /
+          // The raw link at this point is like: chat/team#channel?record=1
+          // url-parse already split host/path so we reconstruct from parts.
+          const rawChatPart = parts.slice(1).join('/')
+          const qIdx = rawChatPart.indexOf('?')
+          const chatPath = qIdx !== -1 ? rawChatPart.substring(0, qIdx) : rawChatPart
+          const queryStr = qIdx !== -1 ? rawChatPart.substring(qIdx + 1) : ''
+          const shouldRecord = /(?:^|&)record=1(?:&|$)/.test(queryStr)
+
+          const chatParts = chatPath ? chatPath.split('/') : []
+          if (chatParts.length === 1 || chatParts.length === 2) {
+            if (chatParts[0]!.includes('#')) {
+              const teamChat = chatParts[0]!.split('#')
               if (teamChat.length !== 2) {
                 get().dispatch.setLinkError(error)
                 navigateAppend('keybaseLinkError')
                 return
               }
               const [teamname, channelname] = teamChat
-              const _highlightMessageID = parseInt(parts[2]!, 10)
+              const _highlightMessageID = parseInt(chatParts[1]!, 10)
               if (_highlightMessageID < 0) {
                 logger.warn(`invalid chat message id: ${_highlightMessageID}`)
                 return
@@ -227,9 +238,18 @@ export const useDeepLinksState = Z.createZustand<State>((set, get) => {
                 reason: 'appLink',
                 teamname,
               })
+              if (shouldRecord) {
+                // Delay to let the conversation view mount before arming the recorder
+                setTimeout(() => {
+                  const convoID = ChatCommon.getSelectedConversation()
+                  if (T.Chat.isValidConversationIDKey(convoID)) {
+                    storeRegistry.getConvoState(convoID).dispatch.requestStartAudioRecording()
+                  }
+                }, 500)
+              }
               return
             } else {
-              const highlightMessageID = parseInt(parts[2]!, 10)
+              const highlightMessageID = parseInt(chatParts[1]!, 10)
               if (highlightMessageID < 0) {
                 logger.warn(`invalid chat message id: ${highlightMessageID}`)
                 return
@@ -237,13 +257,22 @@ export const useDeepLinksState = Z.createZustand<State>((set, get) => {
               const {previewConversation} = storeRegistry.getState('chat').dispatch
               previewConversation({
                 highlightMessageID: T.Chat.numberToMessageID(highlightMessageID),
-                participants: parts[1]!.split(','),
+                participants: chatParts[0]!.split(','),
                 reason: 'appLink',
               })
+              if (shouldRecord) {
+                setTimeout(() => {
+                  const convoID = ChatCommon.getSelectedConversation()
+                  if (T.Chat.isValidConversationIDKey(convoID)) {
+                    storeRegistry.getConvoState(convoID).dispatch.requestStartAudioRecording()
+                  }
+                }, 500)
+              }
               return
             }
           }
           break
+        }
         case 'team-page': // keybase://team-page/{team_name}/{manage_settings,add_or_invite}?
           if (parts.length >= 2) {
             const teamName = parts[1]!

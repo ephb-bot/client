@@ -540,6 +540,16 @@ const AudioRecorder = React.memo(function AudioRecorder(props: Props) {
     startRecording,
   })
 
+  // Deep-link support: start recording when navigated here via keybase://chat/...?record=1
+  const pendingAudioRecording = Chat.useChatContext(s => s.pendingAudioRecording)
+  const clearPendingAudioRecording = Chat.useChatContext(s => s.dispatch.clearPendingAudioRecording)
+  React.useEffect(() => {
+    if (pendingAudioRecording) {
+      clearPendingAudioRecording()
+      startRecording()
+    }
+  }, [pendingAudioRecording, clearPendingAudioRecording, startRecording])
+
   return (
     <>
       {tooltip}

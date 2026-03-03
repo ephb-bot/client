@@ -140,6 +140,7 @@ type ConvoStore = T.Immutable<{
   unfurlPrompt: Map<T.Chat.MessageID, Set<string>>
   unread: number
   unsentText?: string
+  pendingAudioRecording: boolean
 }>
 
 const initialConvoStore: ConvoStore = {
@@ -178,6 +179,7 @@ const initialConvoStore: ConvoStore = {
   unfurlPrompt: new Map(),
   unread: 0,
   unsentText: undefined,
+  pendingAudioRecording: false,
 }
 
 type LoadMoreMessagesParams = {
@@ -277,6 +279,8 @@ export interface ConvoState extends ConvoStore {
     refreshBotSettings: (username: string) => void
     removeBotMember: (username: string) => void
     replyJump: (messageID: T.Chat.MessageID) => void
+    requestStartAudioRecording: () => void
+    clearPendingAudioRecording: () => void
     resetChatWithoutThem: () => void
     resetLetThemIn: (username: string) => void
     resetState: 'default'
@@ -2464,6 +2468,16 @@ const createSlice: Z.ImmerStateCreator<ConvoState> = (set, get) => {
     replyJump: messageID => {
       setMessageCenterOrdinal()
       get().dispatch.loadMessagesCentered(messageID, 'flash')
+    },
+    requestStartAudioRecording: () => {
+      set(s => {
+        s.pendingAudioRecording = true
+      })
+    },
+    clearPendingAudioRecording: () => {
+      set(s => {
+        s.pendingAudioRecording = false
+      })
     },
     resetChatWithoutThem: () => {
       // Implicit teams w/ reset users we can invite them back in or chat w/o them
