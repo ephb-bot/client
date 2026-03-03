@@ -182,6 +182,15 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      # WpfPrompter targets .NET Framework 4.0 — the targeting pack is not
+      # pre-installed on windows-2022 runners. Install it via Chocolatey.
+      - name: Install .NET 4.0 targeting pack
+        shell: powershell
+        run: |
+          choco install netfx-4.0-devpack -y --no-progress
+          # The targeting pack installs reference assemblies to the standard path;
+          # MSBuild picks them up automatically on the next invocation.
+
       - name: Build prompter.exe (WPF updater)
         working-directory: C:\work\src\github.com\keybase\client\go\updater\windows\WpfPrompter
         run: |
