@@ -317,6 +317,9 @@ type attachOptionsV1 struct {
 	Preview           string
 	Title             string
 	EphemeralLifetime ephemeralLifetime `json:"exploding_lifetime"`
+	IsAudio           bool             `json:"is_audio"`
+	AudioDurationMs   int              `json:"audio_duration_ms"`
+	AudioAmps         []float64        `json:"audio_amps"`
 }
 
 func (a attachOptionsV1) Check() error {

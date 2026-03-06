@@ -848,6 +848,17 @@ func (c *chatServiceHandler) AttachV1(ctx context.Context, opts attachOptionsV1,
 		}
 	}
 
+	// Build audio preview metadata when the caller marks this as an audio
+	// attachment. Duration and waveform amplitudes are auto-detected from
+	// MP4/M4A files when not supplied explicitly.
+	if opts.IsAudio {
+		audioPreview, audioErr := c.buildAudioPreview(ctx, opts)
+		if audioErr != nil {
+			return c.errReply(audioErr)
+		}
+		arg.CallerPreview = &audioPreview
+	}
+
 	c.chatUI.RegisterChatUI(chatUI)
 	defer c.chatUI.DeregisterChatUI(chatUI)
 	client, err := GetChatLocalClient(c.G())
@@ -890,6 +901,46 @@ func (c *chatServiceHandler) AttachV1(ctx context.Context, opts attachOptionsV1,
 	}
 
 	return Reply{Result: res}
+}
+
+// buildAudioPreview resolves duration and waveform amplitudes for an audio
+// attachment and calls the MakeAudioPreview RPC to produce the preview
+// metadata (waveform PNG, IsAudio flag, duration, amps).
+func (c *chatServiceHandler) buildAudioPreview(ctx context.Context, opts attachOptionsV1) (chat1.MakePreviewRes, error) {
+	durationMs := opts.AudioDurationMs
+	amps := opts.AudioAmps
+
+	// Auto-detect duration and waveform from MP4/M4A files when not provided.
+	if durationMs == 0 || len(amps) == 0 {
+		parsedDuration, parsedAmps, err := attachments.ParseMP4Audio(opts.Filename)
+		if err == nil {
+			if durationMs == 0 {
+				durationMs = parsedDuration
+			}
+			if len(amps) == 0 {
+				amps = parsedAmps
+			}
+		}
+	}
+
+	// Fall back to a random waveform if we still have no amplitude data.
+	if len(amps) == 0 {
+		amps = attachments.GenerateRandomAmps(60)
+	}
+
+	// Duration is required - we cannot send an audio message without it.
+	if durationMs == 0 {
+		return chat1.MakePreviewRes{}, fmt.Errorf("could not determine audio duration; provide audio_duration_ms for non-MP4 files")
+	}
+
+	client, err := GetChatLocalClient(c.G())
+	if err != nil {
+		return chat1.MakePreviewRes{}, err
+	}
+	return client.MakeAudioPreview(ctx, chat1.MakeAudioPreviewArg{
+		Amps:     amps,
+		Duration: durationMs,
+	})
 }
 
 // DownloadV1 implements ChatServiceHandler.DownloadV1.

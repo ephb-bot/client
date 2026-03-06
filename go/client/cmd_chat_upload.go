@@ -24,6 +24,8 @@ type CmdChatUpload struct {
 	filename          string
 	title             string
 	ephemeralLifetime ephemeralLifetime
+	isAudio           bool
+	audioDurationMs   int
 	cancel            func()
 	done              chan bool
 }
@@ -33,6 +35,14 @@ func newCmdChatUpload(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Co
 		cli.StringFlag{
 			Name:  "title",
 			Usage: "Title of attachment (defaults to filename)",
+		},
+		cli.BoolFlag{
+			Name:  "is-audio",
+			Usage: "Send as an audio message with waveform and duration",
+		},
+		cli.IntFlag{
+			Name:  "audio-duration-ms",
+			Usage: "Audio duration in milliseconds (auto-detected for MP4/M4A)",
 		},
 	}
 	flags = append(flags, getConversationResolverFlags()...)
@@ -68,6 +78,8 @@ func (c *CmdChatUpload) ParseArgv(ctx *cli.Context) (err error) {
 	}
 	c.title = ctx.String("title")
 	c.ephemeralLifetime = ephemeralLifetime{ctx.Duration("exploding-lifetime")}
+	c.isAudio = ctx.Bool("is-audio")
+	c.audioDurationMs = ctx.Int("audio-duration-ms")
 	c.hasTTY = isatty.IsTerminal(os.Stdin.Fd())
 	return nil
 }
@@ -129,6 +141,8 @@ func (c *CmdChatUpload) Run() (err error) {
 		Filename:          c.filename,
 		Title:             c.title,
 		EphemeralLifetime: c.ephemeralLifetime,
+		IsAudio:           c.isAudio,
+		AudioDurationMs:   c.audioDurationMs,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
