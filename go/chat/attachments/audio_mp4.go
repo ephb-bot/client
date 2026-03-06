@@ -143,7 +143,7 @@ func parseMvhd(r io.Reader) (timescale uint32, duration uint64, err error) {
 		timescale = binary.BigEndian.Uint32(fields[8:12])
 		duration = uint64(binary.BigEndian.Uint32(fields[12:16]))
 	} else {
-		var fields [24]byte // created(8) + modified(8) + timescale(4) + duration(8)
+		var fields [28]byte // created(8) + modified(8) + timescale(4) + duration(8)
 		if _, err = io.ReadFull(r, fields[:]); err != nil {
 			return
 		}
