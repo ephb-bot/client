@@ -1,0 +1,81 @@
+name: Linux CLI Build
+
+on:
+  push:
+    branches: [feat/cli-audio-attach]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux CLI
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: go/go.sum
+
+      - name: Build keybase
+        working-directory: go/keybase
+        env:
+          CGO_ENABLED: 0
+          GOPATH: /home/runner/work/go
+        run: |
+          go generate
+          go build -tags "prerelease production" -ldflags="-s -w" -o keybase
+
+      - name: Build kbfsfuse
+        working-directory: go/kbfs/kbfsfuse
+        env:
+          CGO_ENABLED: 0
+        run: go build -tags "prerelease production" -ldflags="-s -w" -o kbfsfuse
+
+      - name: Build git-remote-keybase
+        working-directory: go/kbfs/kbfsgit/git-remote-keybase
+        env:
+          CGO_ENABLED: 0
+        run: go build -o git-remote-keybase
+
+      - name: Build updater
+        working-directory: go/updater/service
+        env:
+          CGO_ENABLED: 0
+        run: go build -o updater
+
+      - name: Build kbnm
+        working-directory: go/kbnm
+        env:
+          CGO_ENABLED: 0
+        run: go build -o kbnm
+
+      - name: Collect binaries
+        run: |
+          mkdir -p dist/keybase-linux-amd64
+          cp go/keybase/keybase dist/keybase-linux-amd64/
+          cp go/kbfs/kbfsfuse/kbfsfuse dist/keybase-linux-amd64/
+          cp go/kbfs/kbfsgit/git-remote-keybase/git-remote-keybase dist/keybase-linux-amd64/
+          cp go/updater/service/updater dist/keybase-linux-amd64/
+          cp go/kbnm/kbnm dist/keybase-linux-amd64/
+          cd dist && tar czf keybase-linux-amd64.tar.gz keybase-linux-amd64/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: keybase-linux-amd64
+          path: dist/keybase-linux-amd64.tar.gz
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/keybase-linux-amd64.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
