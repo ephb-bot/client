@@ -177,6 +177,8 @@ jobs:
       # the unsigned IPA artifact.
       - name: Import signing certificate
         if: env.HAS_SIGNING_CERT == 'true'
+        continue-on-error: true
+        id: import-cert
         env:
           CERTIFICATE_P12: ${{ secrets.SIGNING_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
@@ -200,7 +202,9 @@ jobs:
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
       - name: Install provisioning profile (main app)
-        if: env.HAS_PROVISIONING == 'true'
+        if: env.HAS_PROVISIONING == 'true' && steps.import-cert.outcome == 'success'
+        continue-on-error: true
+        id: install-pp
         env:
           PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
         run: |
@@ -214,7 +218,9 @@ jobs:
           echo "PROVISIONING_PROFILE_UUID=$UUID" >> $GITHUB_ENV
 
       - name: Install provisioning profile (share extension)
-        if: env.HAS_PROVISIONING_EXT == 'true'
+        if: env.HAS_PROVISIONING_EXT == 'true' && steps.import-cert.outcome == 'success'
+        continue-on-error: true
+        id: install-pp-ext
         env:
           PROVISIONING_PROFILE_EXT: ${{ secrets.PROVISIONING_PROFILE_SHARE_EXTENSION }}
         run: |
@@ -229,7 +235,7 @@ jobs:
       # -- Xcode build (signed) ----------------------------------------------------
       # Only runs when signing secrets are configured.
       - name: Build (device, signed)
-        if: env.HAS_SIGNING_CERT == 'true' && env.HAS_PROVISIONING == 'true'
+        if: steps.import-cert.outcome == 'success' && steps.install-pp.outcome == 'success'
         working-directory: shared/ios
         run: |
           xcodebuild \
@@ -244,7 +250,7 @@ jobs:
 
       # -- Package signed IPA ------------------------------------------------------
       - name: Package signed IPA
-        if: env.HAS_SIGNING_CERT == 'true' && env.HAS_PROVISIONING == 'true'
+        if: steps.import-cert.outcome == 'success' && steps.install-pp.outcome == 'success'
         run: |
           mkdir -p /tmp/ipa/Payload
           cp -r ~/DerivedData/Build/Products/Release-iphoneos/Keybase.app \
@@ -255,7 +261,7 @@ jobs:
 
       # -- Upload signed IPA artifact ----------------------------------------------
       - name: Upload signed IPA
-        if: env.HAS_SIGNING_CERT == 'true' && env.HAS_PROVISIONING == 'true'
+        if: steps.import-cert.outcome == 'success' && steps.install-pp.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: Keybase-iOS-Device
@@ -266,7 +272,7 @@ jobs:
       # -- TestFlight upload -------------------------------------------------------
       # Auto-enabled when APP_STORE_CONNECT_KEY_ID secret is set.
       - name: Upload to TestFlight
-        if: env.HAS_ASC_KEY == 'true' && env.HAS_SIGNING_CERT == 'true'
+        if: env.HAS_ASC_KEY == 'true' && steps.import-cert.outcome == 'success'
         working-directory: shared/ios
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
