@@ -15,6 +15,7 @@
 #import <jsi/jsi.h>
 #import <sys/utsname.h>
 #import <objc/runtime.h>
+#import <MediaPlayer/MediaPlayer.h>
 #import "./KBJSScheduler.h"
 #import "RNKbSpec.h"
 #import <KBCommon/KBCommon-Swift.h>
@@ -74,6 +75,8 @@ static __weak Kb *kbSharedInstance = nil;
 static BOOL kbPasteImageEnabled = NO;
 static NSString *kbStoredDeviceToken = nil;
 static NSDictionary *kbInitialNotification = nil;
+static BOOL kbPTTActive = NO;
+static id kbVolumeObservation = nil;
 
 @interface RCTBridge (JSIRuntime)
 - (void *)runtime;
@@ -164,6 +167,27 @@ RCT_EXPORT_MODULE()
   currentRuntime = nil;
   _jsRuntime = nil;
   kbPasteImageEnabled = NO;
+
+  // Clean up PTT state
+  if (kbPTTActive) {
+    kbPTTActive = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MPRemoteCommandCenter *commandCenter = [MPRemoteCommandCenter sharedCommandCenter];
+      [commandCenter.togglePlayPauseCommand removeTarget:nil];
+      [commandCenter.playCommand removeTarget:nil];
+      [commandCenter.pauseCommand removeTarget:nil];
+      [commandCenter.nextTrackCommand removeTarget:nil];
+      [commandCenter.previousTrackCommand removeTarget:nil];
+      [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
+    });
+  }
+  if (kbVolumeObservation) {
+    @try {
+      [[AVAudioSession sharedInstance] removeObserver:(NSObject *)kbVolumeObservation forKeyPath:@"outputVolume"];
+    } @catch (NSException *exception) {}
+    kbVolumeObservation = nil;
+  }
+
   [super invalidate];
   Teardown();
   self.bridge = nil;
@@ -173,7 +197,7 @@ RCT_EXPORT_MODULE()
 }
 
 - (NSArray<NSString *> *)supportedEvents {
-return @[ metaEventName, @"hardwareKeyPressed", @"onPasteImage", @"onPushNotification", @"onPushToken" ];
+return @[ metaEventName, @"hardwareKeyPressed", @"onPasteImage", @"onPushNotification", @"onPushToken", @"remoteCommand" ];
 }
 
 RCT_EXPORT_METHOD(setEnablePasteImage:(BOOL)enabled) {
@@ -607,6 +631,155 @@ RCT_EXPORT_METHOD(processVideo:(NSString *)path resolve:(RCTPromiseResolveBlock)
 RCT_EXPORT_METHOD(keyPressed:(NSString *)keyName) {
   NSDictionary *event = @{@"pressedKey": keyName};
   [self sendEventWithName:@"hardwareKeyPressed" body:event];
+}
+
+RCT_EXPORT_METHOD(startPushToTalk:(BOOL)useVolumeButton) {
+  if (kbPTTActive) return;
+  kbPTTActive = YES;
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    // Register MPRemoteCommandCenter handlers for AirPods / headset controls
+    MPRemoteCommandCenter *commandCenter = [MPRemoteCommandCenter sharedCommandCenter];
+
+    // Toggle play/pause - single tap on AirPods
+    commandCenter.togglePlayPauseCommand.enabled = YES;
+    [commandCenter.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+      if (kbSharedInstance) {
+        [kbSharedInstance sendEventWithName:@"remoteCommand" body:@{@"command": @"togglePlayPause"}];
+      }
+      return MPRemoteCommandHandlerStatusSuccess;
+    }];
+
+    // Play command
+    commandCenter.playCommand.enabled = YES;
+    [commandCenter.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+      if (kbSharedInstance) {
+        [kbSharedInstance sendEventWithName:@"remoteCommand" body:@{@"command": @"play"}];
+      }
+      return MPRemoteCommandHandlerStatusSuccess;
+    }];
+
+    // Pause command
+    commandCenter.pauseCommand.enabled = YES;
+    [commandCenter.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+      if (kbSharedInstance) {
+        [kbSharedInstance sendEventWithName:@"remoteCommand" body:@{@"command": @"pause"}];
+      }
+      return MPRemoteCommandHandlerStatusSuccess;
+    }];
+
+    // Next track - double tap on AirPods
+    commandCenter.nextTrackCommand.enabled = YES;
+    [commandCenter.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+      if (kbSharedInstance) {
+        [kbSharedInstance sendEventWithName:@"remoteCommand" body:@{@"command": @"nextTrack"}];
+      }
+      return MPRemoteCommandHandlerStatusSuccess;
+    }];
+
+    // Previous track - triple tap on AirPods
+    commandCenter.previousTrackCommand.enabled = YES;
+    [commandCenter.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent * _Nonnull event) {
+      if (kbSharedInstance) {
+        [kbSharedInstance sendEventWithName:@"remoteCommand" body:@{@"command": @"previousTrack"}];
+      }
+      return MPRemoteCommandHandlerStatusSuccess;
+    }];
+
+    // Set initial Now Playing info so the system knows we are the active media app
+    NSMutableDictionary *nowPlayingInfo = [NSMutableDictionary dictionary];
+    nowPlayingInfo[MPMediaItemPropertyTitle] = @"Keybase Voice";
+    nowPlayingInfo[MPMediaItemPropertyArtist] = @"Keybase";
+    nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = @1.0;
+    nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @0.0;
+    [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nowPlayingInfo];
+
+    // Volume button observation (optional fallback)
+    if (useVolumeButton) {
+      AVAudioSession *audioSession = [AVAudioSession sharedInstance];
+      // Remove any existing observation
+      if (kbVolumeObservation) {
+        [audioSession removeObserver:(NSObject *)kbVolumeObservation forKeyPath:@"outputVolume"];
+        kbVolumeObservation = nil;
+      }
+      [audioSession addObserver:kbSharedInstance forKeyPath:@"outputVolume" options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
+      kbVolumeObservation = kbSharedInstance;
+    }
+  });
+}
+
+RCT_EXPORT_METHOD(stopPushToTalk) {
+  if (!kbPTTActive) return;
+  kbPTTActive = NO;
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    // Remove all remote command targets
+    MPRemoteCommandCenter *commandCenter = [MPRemoteCommandCenter sharedCommandCenter];
+    [commandCenter.togglePlayPauseCommand removeTarget:nil];
+    [commandCenter.playCommand removeTarget:nil];
+    [commandCenter.pauseCommand removeTarget:nil];
+    [commandCenter.nextTrackCommand removeTarget:nil];
+    [commandCenter.previousTrackCommand removeTarget:nil];
+
+    commandCenter.togglePlayPauseCommand.enabled = NO;
+    commandCenter.playCommand.enabled = NO;
+    commandCenter.pauseCommand.enabled = NO;
+    commandCenter.nextTrackCommand.enabled = NO;
+    commandCenter.previousTrackCommand.enabled = NO;
+
+    // Clear Now Playing info
+    [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nil];
+
+    // Remove volume observation
+    if (kbVolumeObservation) {
+      @try {
+        [[AVAudioSession sharedInstance] removeObserver:(NSObject *)kbVolumeObservation forKeyPath:@"outputVolume"];
+      } @catch (NSException *exception) {
+        NSLog(@"Exception removing volume observer: %@", exception);
+      }
+      kbVolumeObservation = nil;
+    }
+  });
+}
+
+RCT_EXPORT_METHOD(updateNowPlaying:(NSString *)title artist:(NSString *)artist playbackRate:(double)rate elapsedTime:(double)elapsed) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSMutableDictionary *nowPlayingInfo = [NSMutableDictionary dictionary];
+    nowPlayingInfo[MPMediaItemPropertyTitle] = title ?: @"Keybase Voice";
+    nowPlayingInfo[MPMediaItemPropertyArtist] = artist ?: @"Keybase";
+    nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = @(rate);
+    nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(elapsed);
+    [[MPNowPlayingInfoCenter defaultCenter] setNowPlayingInfo:nowPlayingInfo];
+  });
+}
+
+// KVO callback for volume button changes
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
+  if ([keyPath isEqualToString:@"outputVolume"]) {
+    float newVolume = [change[NSKeyValueChangeNewKey] floatValue];
+    float oldVolume = [change[NSKeyValueChangeOldKey] floatValue];
+    if (newVolume != oldVolume) {
+      NSString *direction = (newVolume > oldVolume) ? @"up" : @"down";
+      [self sendEventWithName:@"remoteCommand" body:@{@"command": @"volumeButton", @"direction": direction}];
+      // Reset volume to midpoint to allow repeated presses in the same direction
+      // Use MPVolumeView to suppress the system volume HUD
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        MPVolumeView *volumeView = [[MPVolumeView alloc] initWithFrame:CGRectMake(-1000, -1000, 0, 0)];
+        UISlider *volumeSlider = nil;
+        for (UIView *view in volumeView.subviews) {
+          if ([view isKindOfClass:[UISlider class]]) {
+            volumeSlider = (UISlider *)view;
+            break;
+          }
+        }
+        if (volumeSlider) {
+          volumeSlider.value = 0.5f;
+        }
+      });
+    }
+  } else {
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+  }
 }
 
 - (NSNumber *)androidCheckPushPermissions {return @-1;}

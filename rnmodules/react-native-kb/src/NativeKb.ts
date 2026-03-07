@@ -54,6 +54,9 @@ export interface Spec extends TurboModule {
   setEnablePasteImage(enabled: boolean): void
   clearLocalLogs(): Promise<void>
   //processVideo(path: string): Promise<string>
+  startPushToTalk(useVolumeButton: boolean): void
+  stopPushToTalk(): void
+  updateNowPlaying(title: string, artist: string, playbackRate: number, elapsedTime: number): void
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('Kb')

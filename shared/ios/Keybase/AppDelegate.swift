@@ -5,6 +5,7 @@ import KBCommon
 import UIKit
 import UserNotifications
 import AVFoundation
+import MediaPlayer
 import ExpoModulesCore
 import Keybasego
 

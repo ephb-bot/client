@@ -935,6 +935,21 @@ class KbModule(reactContext: ReactApplicationContext?) : KbSpec(reactContext) {
         promise.reject(Exception("wrong platform"))
     }
 
+    @ReactMethod
+    override fun startPushToTalk(useVolumeButton: Boolean) {
+        // iOS only - no-op on Android
+    }
+
+    @ReactMethod
+    override fun stopPushToTalk() {
+        // iOS only - no-op on Android
+    }
+
+    @ReactMethod
+    override fun updateNowPlaying(title: String, artist: String, playbackRate: Double, elapsedTime: Double) {
+        // iOS only - no-op on Android
+    }
+
     private fun sendHardwareKeyEvent(keyName: String) {
         val params = Arguments.createMap()
         params.putString("pressedKey", keyName)

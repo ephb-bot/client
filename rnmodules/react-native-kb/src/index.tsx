@@ -180,6 +180,50 @@ export const clearLocalLogs = (): Promise<void> => {
   return Kb.clearLocalLogs()
 }
 
+// Push-to-talk (PTT) for AirPods / headset remote commands and volume buttons
+export type RemoteCommandEvent = {
+  command: 'togglePlayPause' | 'play' | 'pause' | 'nextTrack' | 'previousTrack' | 'volumeButton'
+  direction?: 'up' | 'down'
+}
+
+const pttListeners: Array<{remove: () => void}> = []
+
+export const startPushToTalk = (
+  callback: (event: RemoteCommandEvent) => void,
+  useVolumeButton: boolean = false
+): (() => void) => {
+  if (Platform.OS !== 'ios') return () => {}
+  const emitter = getNativeEmitter()
+  const listener = emitter.addListener('remoteCommand', callback)
+  pttListeners.push(listener)
+  Kb.startPushToTalk(useVolumeButton)
+  return () => {
+    listener.remove()
+    const idx = pttListeners.indexOf(listener)
+    if (idx >= 0) pttListeners.splice(idx, 1)
+    if (pttListeners.length === 0) {
+      Kb.stopPushToTalk()
+    }
+  }
+}
+
+export const stopPushToTalk = (): void => {
+  if (Platform.OS !== 'ios') return
+  pttListeners.forEach(l => l.remove())
+  pttListeners.length = 0
+  Kb.stopPushToTalk()
+}
+
+export const updateNowPlaying = (
+  title: string = 'Keybase Voice',
+  artist: string = 'Keybase',
+  playbackRate: number = 1.0,
+  elapsedTime: number = 0.0
+): void => {
+  if (Platform.OS !== 'ios') return
+  Kb.updateNowPlaying(title, artist, playbackRate, elapsedTime)
+}
+
 // export const processVideo = (path: string): Promise<string> => {
 //   return Kb.processVideo(Platform.OS === 'android' ? path.replace('file://', '') : path)
 // }
