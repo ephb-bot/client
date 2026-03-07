@@ -113,6 +113,13 @@ const localCommands: ReadonlyArray<T.RPCChat.ConversationCommand> = [
     usage: '',
     username: '',
   },
+  {
+    description: 'Start/stop hands-free voice conversation (AirPods tap to record)',
+    hasHelpText: false,
+    name: 'voice',
+    usage: '',
+    username: '',
+  },
 ]
 
 const useDataSource = (p: UseDataSourceProps) => {

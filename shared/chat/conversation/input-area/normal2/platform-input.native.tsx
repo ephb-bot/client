@@ -3,6 +3,7 @@ import * as Chat from '@/constants/chat2'
 import * as Kb from '@/common-adapters'
 import * as React from 'react'
 import AudioRecorder from '@/chat/audio/audio-recorder.native'
+import VoiceSession from '@/chat/audio/voice-session.native'
 import FilePickerPopup from '../filepicker-popup'
 import {onHWKeyPressed, removeOnHWKeyPressed} from 'react-native-kb'
 import MoreMenuPopup from './moremenu-popup'
@@ -485,6 +486,7 @@ const PlatformInput = (p: Props) => {
           <AudioSendWrapper />
         </Kb.Box2>
       )}
+      <VoiceSession />
     </>
   )
 }

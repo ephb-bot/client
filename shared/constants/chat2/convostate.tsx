@@ -145,6 +145,7 @@ type ConvoStore = T.Immutable<{
   autoplayQueue: Array<T.Chat.Ordinal>
   autoplayPlaying: T.Chat.Ordinal | undefined
   autoplayedMessageIDs: Set<T.Chat.MessageID>
+  voiceSessionActive: boolean
 }>
 
 const initialConvoStore: ConvoStore = {
@@ -188,6 +189,7 @@ const initialConvoStore: ConvoStore = {
   autoplayQueue: [],
   autoplayPlaying: undefined,
   autoplayedMessageIDs: new Set(),
+  voiceSessionActive: false,
 }
 
 type LoadMoreMessagesParams = {
@@ -292,6 +294,7 @@ export interface ConvoState extends ConvoStore {
     toggleAutoplayAudio: () => void
     enqueueAutoplay: (ordinal: T.Chat.Ordinal) => void
     autoplayFinished: () => void
+    toggleVoiceSession: () => void
     resetChatWithoutThem: () => void
     resetLetThemIn: (username: string) => void
     resetState: 'default'
@@ -2557,6 +2560,21 @@ const createSlice: Z.ImmerStateCreator<ConvoState> = (set, get) => {
         })
       }
     },
+    toggleVoiceSession: () => {
+      const next = !get().voiceSessionActive
+      set(s => {
+        s.voiceSessionActive = next
+        // Voice session requires autoplay to be enabled
+        if (next && !s.autoplayAudio) {
+          s.autoplayAudio = true
+        }
+      })
+      get().dispatch.setCommandStatusInfo({
+        actions: [],
+        displayText: `Voice session ${next ? 'started - tap AirPods to record' : 'stopped'}.`,
+        displayType: T.RPCChat.UICommandStatusDisplayTyp.status,
+      })
+    },
     resetChatWithoutThem: () => {
       // Implicit teams w/ reset users we can invite them back in or chat w/o them
       const meta = get().meta
@@ -2669,6 +2687,10 @@ const createSlice: Z.ImmerStateCreator<ConvoState> = (set, get) => {
       // Handle local-only slash commands before sending
       if (text.trim() === '/autoplay') {
         get().dispatch.toggleAutoplayAudio()
+        return
+      }
+      if (text.trim() === '/voice') {
+        get().dispatch.toggleVoiceSession()
         return
       }
       const editOrdinal = get().editing
