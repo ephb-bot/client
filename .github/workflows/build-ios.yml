@@ -10,6 +10,11 @@ jobs:
   build-ios:
     name: Build iOS (device)
     runs-on: macos-latest  # macOS 15 ARM64, Xcode 16
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.SIGNING_CERTIFICATE_P12 != '' }}
+      HAS_PROVISIONING: ${{ secrets.PROVISIONING_PROFILE != '' }}
+      HAS_PROVISIONING_EXT: ${{ secrets.PROVISIONING_PROFILE_SHARE_EXTENSION != '' }}
+      HAS_ASC_KEY: ${{ secrets.APP_STORE_CONNECT_KEY_ID != '' }}
 
     steps:
       # -- Checkout ----------------------------------------------------------------
@@ -134,7 +139,7 @@ jobs:
       # Profiles: main app + share extension .mobileprovision, base64-encoded
       # All stored as GitHub Actions secrets.
       - name: Import signing certificate
-        if: ${{ secrets.SIGNING_CERTIFICATE_P12 != '' }}
+        if: env.HAS_SIGNING_CERT == 'true'
         env:
           CERTIFICATE_P12: ${{ secrets.SIGNING_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
@@ -158,7 +163,7 @@ jobs:
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
       - name: Install provisioning profile (main app)
-        if: ${{ secrets.PROVISIONING_PROFILE != '' }}
+        if: env.HAS_PROVISIONING == 'true'
         env:
           PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
         run: |
@@ -172,7 +177,7 @@ jobs:
           echo "PROVISIONING_PROFILE_UUID=$UUID" >> $GITHUB_ENV
 
       - name: Install provisioning profile (share extension)
-        if: ${{ secrets.PROVISIONING_PROFILE_SHARE_EXTENSION != '' }}
+        if: env.HAS_PROVISIONING_EXT == 'true'
         env:
           PROVISIONING_PROFILE_EXT: ${{ secrets.PROVISIONING_PROFILE_SHARE_EXTENSION }}
         run: |
@@ -222,7 +227,7 @@ jobs:
       # -- TestFlight upload -------------------------------------------------------
       # Auto-enabled when APP_STORE_CONNECT_KEY_ID secret is set.
       - name: Upload to TestFlight
-        if: ${{ secrets.APP_STORE_CONNECT_KEY_ID != '' }}
+        if: env.HAS_ASC_KEY == 'true'
         working-directory: shared/ios
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
