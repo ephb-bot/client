@@ -189,10 +189,48 @@ jobs:
           cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID".mobileprovision
           echo "PROVISIONING_PROFILE_EXT_UUID=$UUID" >> $GITHUB_ENV
 
-      # -- Xcode build (device, signed) --------------------------------------------
-      # Builds for generic/platform=iOS (real device, arm64).
-      # Uses the imported cert + provisioning profiles.
+      # -- Xcode build (unsigned) --------------------------------------------------
+      # Always runs. Builds for generic/platform=iOS (arm64) with code signing
+      # disabled. Produces an unsigned .app you can resign locally with:
+      #   codesign --force --deep --sign "iPhone Distribution: ..." Keybase.app
+      #   ... then zip into Payload/ to create an IPA.
+      - name: Build (device, unsigned)
+        working-directory: shared/ios
+        run: |
+          xcodebuild \
+            -workspace Keybase.xcworkspace \
+            -scheme Keybase \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ~/DerivedData-unsigned \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      # -- Package unsigned IPA ----------------------------------------------------
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p /tmp/ipa-unsigned/Payload
+          cp -r ~/DerivedData-unsigned/Build/Products/Release-iphoneos/Keybase.app \
+            /tmp/ipa-unsigned/Payload/
+          cd /tmp/ipa-unsigned
+          zip -r Keybase-unsigned.ipa Payload/
+
+      # -- Upload unsigned IPA artifact --------------------------------------------
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Keybase-iOS-Unsigned
+          path: /tmp/ipa-unsigned/Keybase-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      # -- Xcode build (signed) ----------------------------------------------------
+      # Only runs when signing secrets are configured.
       - name: Build (device, signed)
+        if: env.HAS_SIGNING_CERT == 'true' && env.HAS_PROVISIONING == 'true'
         working-directory: shared/ios
         run: |
           xcodebuild \
@@ -205,8 +243,9 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             -allowProvisioningUpdates
 
-      # -- Package IPA -------------------------------------------------------------
-      - name: Package IPA
+      # -- Package signed IPA ------------------------------------------------------
+      - name: Package signed IPA
+        if: env.HAS_SIGNING_CERT == 'true' && env.HAS_PROVISIONING == 'true'
         run: |
           mkdir -p /tmp/ipa/Payload
           cp -r ~/DerivedData/Build/Products/Release-iphoneos/Keybase.app \
@@ -215,8 +254,9 @@ jobs:
           zip -r Keybase.ipa Payload/
           echo "IPA_PATH=/tmp/ipa/Keybase.ipa" >> $GITHUB_ENV
 
-      # -- Upload IPA artifact -----------------------------------------------------
-      - name: Upload IPA artifact
+      # -- Upload signed IPA artifact ----------------------------------------------
+      - name: Upload signed IPA
+        if: env.HAS_SIGNING_CERT == 'true' && env.HAS_PROVISIONING == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Keybase-iOS-Device
@@ -227,7 +267,7 @@ jobs:
       # -- TestFlight upload -------------------------------------------------------
       # Auto-enabled when APP_STORE_CONNECT_KEY_ID secret is set.
       - name: Upload to TestFlight
-        if: env.HAS_ASC_KEY == 'true'
+        if: env.HAS_ASC_KEY == 'true' && env.HAS_SIGNING_CERT == 'true'
         working-directory: shared/ios
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
