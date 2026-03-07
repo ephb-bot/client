@@ -4,7 +4,6 @@ import * as Kb from '@/common-adapters'
 import {useOrdinal} from '../ids-context'
 import AudioPlayer from '@/chat/audio/audio-player'
 import {useFSState} from '@/constants/fs'
-import {useCurrentUserState} from '@/constants/current-user'
 
 const missingMessage = Chat.makeMessageAttachment()
 
@@ -23,8 +22,8 @@ const AudioAttachment = () => {
     const m = s.messageMap.get(ordinal)
     return m?.type === 'attachment' ? m : missingMessage
   })
-  const autoplayAudio = Chat.useChatContext(s => s.autoplayAudio)
-  const currentUsername = useCurrentUserState(s => s.username)
+  const autoplayPlaying = Chat.useChatContext(s => s.autoplayPlaying)
+  const autoplayFinished = Chat.useChatContext(s => s.dispatch.autoplayFinished)
   const progressLabel = Chat.messageAttachmentTransferStateToProgressLabel(message.transferState)
   const hasProgress = messageAttachmentHasProgress(message)
   const openLocalPathInSystemFileManagerDesktop = useFSState(
@@ -34,15 +33,21 @@ const AudioAttachment = () => {
     message.downloadPath && openLocalPathInSystemFileManagerDesktop?.(message.downloadPath)
   }
   const url = !message.submitState && message.fileURL.length > 0 ? `${message.fileURL}&contentforce=true` : ''
-  // Only autoplay audio messages sent by others (not your own outgoing messages)
-  const isIncoming = !message.submitState && message.author !== currentUsername
-  const shouldAutoplay = autoplayAudio && isIncoming
+  // Only autoplay the message that is currently at the front of the queue
+  const shouldAutoplay = autoplayPlaying === ordinal
   const showInFinder = !!message.downloadPath && !Kb.Styles.isMobile
   return (
     <Kb.Box2 direction="horizontal" fullWidth={true} alignItems="flex-start">
       <Kb.Box2 direction="vertical" gap="xtiny">
         <Kb.Box2 direction="horizontal" fullWidth={true}>
-          <AudioPlayer autoPlay={shouldAutoplay} big={true} duration={message.audioDuration} url={url} visAmps={message.audioAmps} />
+          <AudioPlayer
+            autoPlay={shouldAutoplay}
+            big={true}
+            duration={message.audioDuration}
+            onAutoplayEnded={autoplayFinished}
+            url={url}
+            visAmps={message.audioAmps}
+          />
         </Kb.Box2>
         {!showInFinder && (
           <Kb.Box2 direction="horizontal" fullWidth={true} alignItems="center">

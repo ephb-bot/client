@@ -13,11 +13,11 @@
 	<string>NSFileProtectionComplete</string>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.keybase</string>
+		<string>group.com.vrtxlabs.keybase</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)group.keybase</string>
+		<string>$(AppIdentifierPrefix)group.com.vrtxlabs.keybase</string>
 	</array>
 </dict>
 </plist>

@@ -6,6 +6,7 @@ const AudioVideo = (props: Props) => {
   const {url, paused, onPositionUpdated, onEnded} = props
   const [sound, setSound] = React.useState<Audio.Sound | undefined>()
 
+  // Clean up sound on unmount or when sound instance changes
   React.useEffect(() => {
     return () => {
       sound
@@ -40,13 +41,18 @@ const AudioVideo = (props: Props) => {
     sound?.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate)
   }, [sound, onPlaybackStatusUpdate])
 
-  const [lastPaused, setLastPaused] = React.useState(paused)
+  // Handle paused state changes via useEffect (not during render)
+  const lastPausedRef = React.useRef(paused)
+  const soundRef = React.useRef(sound)
+  soundRef.current = sound
 
-  if (lastPaused !== paused) {
-    setLastPaused(paused)
+  React.useEffect(() => {
+    if (lastPausedRef.current === paused) return
+    lastPausedRef.current = paused
+
     const f = async () => {
-      let s = sound
-      if (!sound) {
+      let s = soundRef.current
+      if (!s) {
         const {sound: newSound} = await Audio.Sound.createAsync({uri: url})
         s = newSound
         setSound(newSound)
@@ -64,7 +70,33 @@ const AudioVideo = (props: Props) => {
       .catch((e: unknown) => {
         console.error('audio play fail', e)
       })
-  }
+  }, [paused, url])
+
+  // When url arrives after mount and we're already unpaused (autoplay),
+  // kick off playback - the paused effect won't re-fire because paused
+  // didn't change, only the url did.
+  const lastUrlRef = React.useRef(url)
+  React.useEffect(() => {
+    if (lastUrlRef.current === url) return
+    lastUrlRef.current = url
+    if (!paused && url.length > 0) {
+      const f = async () => {
+        let s = soundRef.current
+        if (!s) {
+          const {sound: newSound} = await Audio.Sound.createAsync({uri: url})
+          s = newSound
+          setSound(newSound)
+          await newSound.setProgressUpdateIntervalAsync(100)
+        }
+        await s?.playAsync()
+      }
+      f()
+        .then(() => {})
+        .catch((e: unknown) => {
+          console.error('audio autoplay url-change fail', e)
+        })
+    }
+  }, [url, paused])
 
   return null
 }

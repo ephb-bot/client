@@ -2,9 +2,8 @@ name: iOS Build
 
 on:
   push:
-    branches: [ci/ios-build]
-  pull_request:
-    branches: [ci/ios-build]
+    branches: [ci/ios-build, feat/cli-audio-attach]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
@@ -13,22 +12,22 @@ jobs:
     runs-on: macos-latest  # macOS 15 ARM64, Xcode 16
 
     steps:
-      # ── Checkout ──────────────────────────────────────────────────────────
+      # -- Checkout ----------------------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           fetch-tags: false
 
-      # ── Go ────────────────────────────────────────────────────────────────
+      # -- Go ----------------------------------------------------------------------
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache-dependency-path: go/go.sum
 
-      # ── Node / Yarn ────────────────────────────────────────────────────────
-      # Node must be set up before CocoaPods — Podfile uses `node --print` to
+      # -- Node / Yarn --------------------------------------------------------------
+      # Node must be set up before CocoaPods - Podfile uses `node --print` to
       # resolve react-native and expo paths.
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -38,7 +37,7 @@ jobs:
       - name: Install Yarn
         run: npm install -g yarn
 
-      # ── Ruby / Fastlane ───────────────────────────────────────────────────
+      # -- Ruby / Fastlane ---------------------------------------------------------
       # Fastlane is used for signed IPA builds (TestFlight/App Store).
       # The Gemfile lives in shared/ios/. bundler-cache speeds up subsequent runs.
       - name: Set up Ruby
@@ -48,7 +47,7 @@ jobs:
           bundler-cache: true
           working-directory: shared/ios
 
-      # ── Cache node_modules ─────────────────────────────────────────────────
+      # -- Cache node_modules -------------------------------------------------------
       - name: Cache node_modules
         id: cache-node-modules
         uses: actions/cache@v4
@@ -57,7 +56,7 @@ jobs:
           key: node-modules-ios-${{ hashFiles('shared/yarn.lock') }}
           restore-keys: node-modules-ios-
 
-      # ── Cache CocoaPods ────────────────────────────────────────────────────
+      # -- Cache CocoaPods ----------------------------------------------------------
       - name: Cache CocoaPods
         uses: actions/cache@v4
         with:
@@ -65,14 +64,14 @@ jobs:
           key: pods-${{ hashFiles('shared/ios/Podfile.lock') }}
           restore-keys: pods-
 
-      # ── GOPATH layout ─────────────────────────────────────────────────────
+      # -- GOPATH layout ------------------------------------------------------------
       - name: Configure GOPATH layout
         run: |
           mkdir -p ~/work/src/github.com/keybase
           ln -sf "$GITHUB_WORKSPACE" ~/work/src/github.com/keybase/client
           echo "GOPATH=$HOME/work" >> $GITHUB_ENV
 
-      # ── Build Go mobile framework (keybasego.xcframework) ─────────────────
+      # -- Build Go mobile framework (keybasego.xcframework) -----------------------
       # gomobile bind compiles the Go bind package into an XCFramework for iOS.
       # Output: shared/ios/keybasego.xcframework (consumed by Xcode).
       # GOPATH is available here from $GITHUB_ENV set in the previous step.
@@ -84,13 +83,13 @@ jobs:
           export PATH="$GOPATH/bin:$PATH"
           bash shared/react-native/gobuild.sh ios
 
-      # ── JS dependencies ───────────────────────────────────────────────────
+      # -- JS dependencies ---------------------------------------------------------
       - name: Install JS dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         working-directory: shared
         run: yarn install --pure-lockfile --ignore-optional --ignore-scripts
 
-      # Node 20 babel shim — hooks Module._extensions for .tsx/.ts to
+      # Node 20 babel shim - hooks Module._extensions for .tsx/.ts to
       # pre-transpile to CommonJS. node_modules/.bin on PATH for patch-package etc.
       - name: Write babel shim
         working-directory: shared
@@ -125,16 +124,17 @@ jobs:
           export PATH="$PWD/node_modules/.bin:$PATH"
           node yarn-runner.js postinstall
 
-      # ── CocoaPods ─────────────────────────────────────────────────────────
+      # -- CocoaPods ---------------------------------------------------------------
       - name: Install CocoaPods
         working-directory: shared/ios
         run: pod install --repo-update
 
-      # ── Import signing certificate & provisioning profile ─────────────────
+      # -- Import signing certificate & provisioning profiles ----------------------
       # Certificate: exported from Keychain as .p12, base64-encoded
-      # Profile: wildcard .mobileprovision, base64-encoded
-      # Both stored as GitHub Actions secrets.
+      # Profiles: main app + share extension .mobileprovision, base64-encoded
+      # All stored as GitHub Actions secrets.
       - name: Import signing certificate
+        if: env.CERTIFICATE_P12 != ''
         env:
           CERTIFICATE_P12: ${{ secrets.SIGNING_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
@@ -157,7 +157,8 @@ jobs:
             -S apple-tool:,apple: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-      - name: Install provisioning profile
+      - name: Install provisioning profile (main app)
+        if: env.PROVISIONING_PROFILE != ''
         env:
           PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
         run: |
@@ -170,9 +171,22 @@ jobs:
           cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID".mobileprovision
           echo "PROVISIONING_PROFILE_UUID=$UUID" >> $GITHUB_ENV
 
-      # ── Xcode build (device, signed) ───────────────────────────────────────
+      - name: Install provisioning profile (share extension)
+        if: env.PROVISIONING_PROFILE_EXT != ''
+        env:
+          PROVISIONING_PROFILE_EXT: ${{ secrets.PROVISIONING_PROFILE_SHARE_EXTENSION }}
+        run: |
+          PP_PATH="$RUNNER_TEMP/profile-ext.mobileprovision"
+          echo "$PROVISIONING_PROFILE_EXT" | base64 --decode > "$PP_PATH"
+          UUID=$(security cms -D -i "$PP_PATH" \
+            | plutil -extract UUID raw -)
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID".mobileprovision
+          echo "PROVISIONING_PROFILE_EXT_UUID=$UUID" >> $GITHUB_ENV
+
+      # -- Xcode build (device, signed) --------------------------------------------
       # Builds for generic/platform=iOS (real device, arm64).
-      # Uses the imported wildcard cert + provisioning profile.
+      # Uses the imported cert + provisioning profiles.
       - name: Build (device, signed)
         working-directory: shared/ios
         run: |
@@ -186,7 +200,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             -allowProvisioningUpdates
 
-      # ── Package IPA ────────────────────────────────────────────────────────
+      # -- Package IPA -------------------------------------------------------------
       - name: Package IPA
         run: |
           mkdir -p /tmp/ipa/Payload
@@ -196,7 +210,7 @@ jobs:
           zip -r Keybase.ipa Payload/
           echo "IPA_PATH=/tmp/ipa/Keybase.ipa" >> $GITHUB_ENV
 
-      # ── Upload IPA artifact ────────────────────────────────────────────────
+      # -- Upload IPA artifact -----------------------------------------------------
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
@@ -205,15 +219,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # ── TestFlight (disabled until App Store Connect is configured) ────────
-      # Remove the `if: ${{ false }}` and add secrets to enable:
-      #   APP_STORE_CONNECT_KEY_ID, APP_STORE_CONNECT_ISSUER_ID,
-      #   APP_STORE_CONNECT_KEY (base64-encoded .p8)
+      # -- TestFlight upload -------------------------------------------------------
+      # Auto-enabled when APP_STORE_CONNECT_KEY_ID secret is set.
       - name: Upload to TestFlight
-        if: ${{ false }}
+        if: ${{ secrets.APP_STORE_CONNECT_KEY_ID != '' }}
         working-directory: shared/ios
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
         run: bundle exec fastlane beta
+
+      # -- Cleanup temporary keychain ----------------------------------------------
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true

@@ -142,6 +142,9 @@ type ConvoStore = T.Immutable<{
   unsentText?: string
   pendingAudioRecording: boolean
   autoplayAudio: boolean
+  autoplayQueue: Array<T.Chat.Ordinal>
+  autoplayPlaying: T.Chat.Ordinal | undefined
+  autoplayedMessageIDs: Set<T.Chat.MessageID>
 }>
 
 const initialConvoStore: ConvoStore = {
@@ -182,6 +185,9 @@ const initialConvoStore: ConvoStore = {
   unsentText: undefined,
   pendingAudioRecording: false,
   autoplayAudio: false,
+  autoplayQueue: [],
+  autoplayPlaying: undefined,
+  autoplayedMessageIDs: new Set(),
 }
 
 type LoadMoreMessagesParams = {
@@ -284,6 +290,8 @@ export interface ConvoState extends ConvoStore {
     requestStartAudioRecording: () => void
     clearPendingAudioRecording: () => void
     toggleAutoplayAudio: () => void
+    enqueueAutoplay: (ordinal: T.Chat.Ordinal) => void
+    autoplayFinished: () => void
     resetChatWithoutThem: () => void
     resetLetThemIn: (username: string) => void
     resetState: 'default'
@@ -2336,6 +2344,21 @@ const createSlice: Z.ImmerStateCreator<ConvoState> = (set, get) => {
         // A normal message
         messagesAdd([message], {incomingMessage: true, why: 'incoming general'})
       }
+
+      // Enqueue incoming audio messages for sequential autoplay (component-level).
+      // The actual playback is driven by AudioAttachment reading autoplayPlaying.
+      if (
+        get().autoplayAudio &&
+        message.type === 'attachment' &&
+        message.attachmentType === 'audio' &&
+        !message.submitState &&
+        message.author !== username
+      ) {
+        const msgID = message.id
+        if (!get().autoplayedMessageIDs.has(msgID)) {
+          get().dispatch.enqueueAutoplay(message.ordinal)
+        }
+      }
     },
     onMessageErrored: (outboxID, reason, errorTyp) => {
       set(s => {
@@ -2486,12 +2509,53 @@ const createSlice: Z.ImmerStateCreator<ConvoState> = (set, get) => {
       const next = !get().autoplayAudio
       set(s => {
         s.autoplayAudio = next
+        if (!next) {
+          // Clear queue when disabling autoplay
+          s.autoplayQueue = []
+          s.autoplayPlaying = undefined
+        }
       })
       get().dispatch.setCommandStatusInfo({
         actions: [],
         displayText: `Audio autoplay ${next ? 'enabled' : 'disabled'} for this conversation.`,
         displayType: T.RPCChat.UICommandStatusDisplayTyp.status,
       })
+    },
+    enqueueAutoplay: (ordinal: T.Chat.Ordinal) => {
+      const queue = get().autoplayQueue
+      if (queue.includes(ordinal)) return
+      const isFirst = !get().autoplayPlaying && queue.length === 0
+      set(s => {
+        s.autoplayQueue = [...s.autoplayQueue, ordinal]
+        if (isFirst) {
+          s.autoplayPlaying = ordinal
+          s.autoplayQueue = s.autoplayQueue.filter(o => o !== ordinal)
+        }
+      })
+    },
+    autoplayFinished: () => {
+      // Mark the current message as played, then advance to the next in queue
+      const playing = get().autoplayPlaying
+      if (playing) {
+        const msg = get().messageMap.get(playing)
+        if (msg && msg.type === 'attachment') {
+          set(s => {
+            s.autoplayedMessageIDs = new Set(s.autoplayedMessageIDs).add(msg.id)
+          })
+        }
+      }
+      const queue = get().autoplayQueue
+      if (queue.length > 0) {
+        const next = queue[0]!
+        set(s => {
+          s.autoplayPlaying = next
+          s.autoplayQueue = s.autoplayQueue.slice(1)
+        })
+      } else {
+        set(s => {
+          s.autoplayPlaying = undefined
+        })
+      }
     },
     resetChatWithoutThem: () => {
       // Implicit teams w/ reset users we can invite them back in or chat w/o them

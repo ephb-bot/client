@@ -63,12 +63,13 @@ type Props = {
   big: boolean
   duration: number
   maxWidth?: number
+  onAutoplayEnded?: () => void
   url: string
   visAmps: undefined | ReadonlyArray<number>
 }
 
 const AudioPlayer = (props: Props) => {
-  const {autoPlay, duration, big, maxWidth, url, visAmps} = props
+  const {autoPlay, duration, big, maxWidth, onAutoplayEnded, url, visAmps} = props
   const [playedRatio, setPlayedRatio] = React.useState(0)
   // Start unpaused when autoPlay is requested and we have a url ready
   const [paused, setPaused] = React.useState(() => !(autoPlay && url.length > 0))
@@ -100,7 +101,10 @@ const AudioPlayer = (props: Props) => {
   const onEnded = React.useCallback(() => {
     setPaused(true)
     setPlayedRatio(0)
-  }, [setPaused, setPlayedRatio])
+    if (autoPlay && onAutoplayEnded) {
+      onAutoplayEnded()
+    }
+  }, [setPaused, setPlayedRatio, autoPlay, onAutoplayEnded])
 
   const timeLeft = duration - playedRatio * duration
   return (

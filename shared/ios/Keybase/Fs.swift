@@ -6,7 +6,7 @@ import Foundation
         NSLog("setupFs: starting")
 
         var home = NSHomeDirectory()
-        let sharedURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.keybase")
+        let sharedURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.vrtxlabs.keybase")
         var sharedHome = sharedURL?.relativePath ?? ""
 
         home = setupAppHome(home: home, sharedHome: sharedHome)
